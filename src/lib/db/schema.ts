@@ -51,7 +51,7 @@ export const presets = sqliteTable("presets", {
   name: text("name").notNull(),
   description: text("description"),
   thumbnailUrl: text("thumbnail_url"),
-  category: text("category", { enum: ["waveform", "particles", "3d", "minimal", "retro"] }).notNull(),
+  category: text("category", { enum: ["waveform", "particles", "3d", "minimal", "retro", "shader"] }).notNull(),
   tier: text("tier", { enum: ["free", "pro", "enterprise"] }).default("free").notNull(),
   componentName: text("component_name").notNull(),
   defaultConfig: text("default_config").notNull(), // JSON string
@@ -69,7 +69,8 @@ export const projects = sqliteTable("projects", {
   audioDuration: real("audio_duration"),
   audioWaveform: text("audio_waveform"), // JSON: pre-computed amplitude/frequency/beat data
   logoUrl: text("logo_url"),
-  backgroundUrl: text("background_url"),
+  backgroundUrl: text("background_url"), // image or video URL
+  overlayUrl: text("overlay_url"), // corner overlay image
   config: text("config").notNull(), // JSON: full editor state
   status: text("status", { enum: ["draft", "rendering", "done", "failed"] }).default("draft").notNull(),
   renderJobId: text("render_job_id"),

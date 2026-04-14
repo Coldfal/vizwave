@@ -1,12 +1,12 @@
 "use client";
 
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { useEditorStore } from "@/stores/editor-store";
 import { Button } from "@/components/ui/button";
 import { EditorSidebar } from "./editor-sidebar";
 import { PreviewCanvas } from "./preview-canvas";
 import { PlaybackControls } from "./playback-controls";
-import { Music, ArrowLeft, Save, Loader2 } from "lucide-react";
+import { Music, ArrowLeft, Save, Loader2, Pencil } from "lucide-react";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import Link from "next/link";
@@ -18,22 +18,51 @@ export function EditorShell() {
   const resetDirty = useEditorStore((s) => s.resetDirty);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savingRef = useRef(false);
+  const [editingName, setEditingName] = useState(false);
+  const [nameValue, setNameValue] = useState("");
+  const nameInputRef = useRef<HTMLInputElement>(null);
 
-  // Auto-save on config change (debounced)
+  // Auto-save on config change (debounced) — saves all project state
   const save = useCallback(async () => {
     if (!project || savingRef.current) return;
     savingRef.current = true;
     try {
+      const payload: Record<string, unknown> = {
+        config: JSON.stringify(config),
+        presetId: project.presetId,
+        logoUrl: project.logoUrl,
+        backgroundUrl: project.backgroundUrl,
+        overlayUrl: project.overlayUrl,
+        audioUrl: project.audioUrl,
+        audioDuration: project.audioDuration,
+      };
       await fetch(`/api/projects/${project.id}`, {
         method: "PATCH",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ config: JSON.stringify(config) }),
+        body: JSON.stringify(payload),
       });
       resetDirty();
     } finally {
       savingRef.current = false;
     }
   }, [project, config, resetDirty]);
+
+  const saveName = useCallback(async () => {
+    const trimmed = nameValue.trim();
+    if (!project || !trimmed || trimmed === project.name) {
+      setEditingName(false);
+      return;
+    }
+    await fetch(`/api/projects/${project.id}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ name: trimmed }),
+    });
+    useEditorStore.setState((s) => ({
+      project: s.project ? { ...s.project, name: trimmed } : null,
+    }));
+    setEditingName(false);
+  }, [project, nameValue]);
 
   useEffect(() => {
     if (!isDirty) return;
@@ -57,9 +86,31 @@ export function EditorShell() {
           </Link>
           <div className="flex items-center gap-2">
             <Music className="h-4 w-4 text-primary" />
-            <span className="text-sm font-medium">
-              {project?.name || "Untitled"}
-            </span>
+            {editingName ? (
+              <input
+                ref={nameInputRef}
+                className="h-7 w-48 rounded border border-border bg-muted/50 px-2 text-sm font-medium outline-none focus:border-primary"
+                value={nameValue}
+                onChange={(e) => setNameValue(e.target.value)}
+                onBlur={saveName}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") saveName();
+                  if (e.key === "Escape") setEditingName(false);
+                }}
+                autoFocus
+              />
+            ) : (
+              <button
+                className="flex items-center gap-1.5 rounded px-1 text-sm font-medium hover:bg-muted/50"
+                onClick={() => {
+                  setNameValue(project?.name || "");
+                  setEditingName(true);
+                }}
+              >
+                {project?.name || "Untitled"}
+                <Pencil className="h-3 w-3 text-muted-foreground" />
+              </button>
+            )}
           </div>
         </div>
         <div className="flex items-center gap-2">

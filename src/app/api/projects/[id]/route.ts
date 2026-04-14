@@ -4,6 +4,10 @@ import { db } from "@/lib/db";
 import { projects } from "@/lib/db/schema";
 import { eq, and } from "drizzle-orm";
 
+// Allow large request bodies (data URLs for images/audio)
+export const maxDuration = 30;
+export const dynamic = "force-dynamic";
+
 export async function GET(
   _req: NextRequest,
   { params }: { params: Promise<{ id: string }> }
@@ -41,7 +45,7 @@ export async function PATCH(
   // Only allow updating specific fields
   const allowedFields = [
     "name", "presetId", "audioUrl", "audioDuration", "audioWaveform",
-    "logoUrl", "backgroundUrl", "config", "resolution",
+    "logoUrl", "backgroundUrl", "overlayUrl", "config", "resolution",
   ];
 
   const updates: Record<string, unknown> = { updatedAt: new Date() };

@@ -40,6 +40,10 @@ export function ExportPanel() {
       });
 
       if (!res.ok) {
+        if (res.status === 404) {
+          toast.info("Video export is coming soon! The render service is not set up yet.");
+          return;
+        }
         let msg = "Export failed";
         try {
           const data = await res.json();

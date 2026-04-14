@@ -39,6 +39,9 @@ yarn-error.log*
 # local database
 local.db
 
+# user uploads
+public/uploads/
+
 # claude code
 .claude/
 

@@ -63,7 +63,11 @@ export function drawRadialWaveform({ ctx, W, H, cx, cy, freq, config, t }: Rende
   const innerRadius = logoSize * 0.52; // just outside the logo square's inscribed circle
   const maxBarHeight = Math.min(W, H) * 0.22 * config.reactivity;
   const bars = resample(freq, numBars);
-  const symmetric = [...bars, ...bars.slice().reverse()];
+  // Mirror: right half = bars (bass→treble bottom→top), left half = reversed copy
+  // This puts bass at bottom center and treble at top — bilaterally symmetric
+  const rightHalf = bars;
+  const leftHalf = bars.slice().reverse();
+  const symmetric = [...rightHalf, ...leftHalf];
 
   ctx.save();
   ctx.translate(cx, cy);
@@ -80,7 +84,8 @@ export function drawRadialWaveform({ ctx, W, H, cx, cy, freq, config, t }: Rende
 
   // Draw bars
   for (let i = 0; i < symmetric.length; i++) {
-    const angle = (i / symmetric.length) * Math.PI * 2 - Math.PI / 2;
+    // Start at bottom (PI/2), go full circle — bass meets at bottom, treble at top
+    const angle = (i / symmetric.length) * Math.PI * 2 + Math.PI / 2;
     const barH = symmetric[i] * maxBarHeight;
     const r0 = innerRadius;
     const r1 = r0 + barH;
@@ -213,8 +218,11 @@ export function drawParticleStorm({ ctx, W, H, cx, cy, freq, config, t }: Render
 // ─── 4. Neon Ring ────────────────────────────────────────────────────
 
 export function drawNeonRing({ ctx, W, H, cx, cy, freq, config, t }: RendererArgs) {
-  const numPoints = 256;
-  const bars = resample(freq, numPoints);
+  const halfPoints = 128;
+  const halfBars = resample(freq, halfPoints);
+  // Mirror: right half bottom→top, left half top→bottom — bilateral symmetry
+  const bars = [...halfBars, ...halfBars.slice().reverse()];
+  const numPoints = bars.length;
   const logoSize = Math.min(W, H) * 0.28 * config.waveformScale;
   const baseR = logoSize * 0.55; // ring wraps around the logo
   const maxDisp = Math.min(W, H) * 0.15 * config.reactivity;
@@ -238,7 +246,7 @@ export function drawNeonRing({ ctx, W, H, cx, cy, freq, config, t }: RendererArg
 
     for (let i = 0; i <= numPoints; i++) {
       const n = (i % numPoints) / numPoints;
-      const angle = n * Math.PI * 2 - Math.PI / 2;
+      const angle = n * Math.PI * 2 + Math.PI / 2;
       const disp = bars[i % numPoints] * maxDisp;
       const r = baseR + disp;
       const x = Math.cos(angle) * r;
@@ -710,9 +718,178 @@ export function drawNeonTunnel({ ctx, W, H, cx, cy, freq, config, t }: RendererA
   ctx.restore();
 }
 
-// ─── 13. Neon Pulse (GLSL shader) ───────────────────────────────────
+// ─── 13. Trap Nation (js.nation-style layered spectrum) ─────────────
+// Faithful recreation of the Trap Nation / js.nation visualizer.
+// 8 rainbow layers drawn back-to-front with frame-delay trails.
+// Bass-focused frequency bins, weighted neighbor smoothing,
+// exponent-on-raw-value height formula, and vivid color-matched glow.
+
+const TRAP_LAYER_COLORS = [
+  "#ffffff", // white (front, no delay)
+  "#ffff00", // yellow
+  "#ff0000", // red
+  "#ff66ff", // pink
+  "#333399", // indigo
+  "#0000ff", // blue
+  "#33ccff", // light blue
+  "#00ff00", // green (back, max delay)
+];
+const TRAP_LAYER_EXPONENTS = [1.0, 1.12, 1.14, 1.30, 1.33, 1.36, 1.50, 1.52];
+const TRAP_LAYER_SMOOTHING = [0, 2, 2, 3, 3, 3, 5, 5];
+const TRAP_FRAME_BUFFER: number[][] = [];
+const TRAP_MAX_FRAMES = 8;
+
+// Weighted neighbor smooth matching js.nation's triangular kernel
+function smoothSpectrum(data: number[], margin: number): number[] {
+  if (margin <= 0) return data;
+  const result: number[] = [];
+  for (let i = 0; i < data.length; i++) {
+    let sum = data[i];
+    let weight = 1;
+    for (let j = 1; j <= margin; j++) {
+      const w = (margin - j + 1) * 2;
+      const left = data[Math.max(0, i - j)];
+      const right = data[Math.min(data.length - 1, i + j)];
+      sum += (left + right) * w;
+      weight += w * 2;
+    }
+    result.push(sum / weight);
+  }
+  return result;
+}
+
+export function drawTrapNation({ ctx, W, H, cx, cy, freq, config, t }: RendererArgs) {
+  // Bass-focused bins: skip sub-bass (0-3), take 40 bins of bass/low-mid
+  // This concentrates energy so the kick peak appears at ~45° from top
+  const bins = freq.slice(4, 44);
+  const numBins = bins.length; // 40
+
+  // Push current frame to history buffer
+  TRAP_FRAME_BUFFER.unshift([...bins]);
+  if (TRAP_FRAME_BUFFER.length > TRAP_MAX_FRAMES) TRAP_FRAME_BUFFER.pop();
+
+  // Overall energy for emblem pulse (0-1)
+  const energy = bins.reduce((s, v) => s + v, 0) / numBins;
+
+  // Emblem radius: wider pulse range for visible breathing
+  const logoSize = Math.min(W, H) * 0.28 * config.waveformScale;
+  const minR = logoSize * 0.45;
+  const maxR = logoSize * 0.58;
+  const emblemR = minR + energy * (maxR - minR);
+
+  // Height scalar: js.nation uses 0.4 at 1920w with 0-255 byte values
+  // Our values are 0-1, so scale accordingly to keep peaks proportional
+  const resMult = W / 1920;
+  const heightScalar = 0.12 * resMult * config.reactivity;
+
+  // Glow radius scaled to resolution
+  const glowRadius = 25 * resMult;
+
+  ctx.save();
+  ctx.translate(cx, cy);
+
+  // Draw layers back to front (layer 7 = green/oldest first, layer 0 = white/current last)
+  for (let layer = 7; layer >= 0; layer--) {
+    const frameIdx = Math.min(layer, TRAP_FRAME_BUFFER.length - 1);
+    const frameData = TRAP_FRAME_BUFFER[frameIdx] || bins;
+
+    const smoothed = smoothSpectrum(frameData, TRAP_LAYER_SMOOTHING[layer]);
+    const exponent = TRAP_LAYER_EXPONENTS[layer];
+    const layerColor = TRAP_LAYER_COLORS[layer];
+
+    ctx.save();
+    ctx.shadowColor = layerColor;
+    ctx.shadowBlur = glowRadius;
+    ctx.fillStyle = layerColor; // Full opacity — overlapping layers create depth
+
+    // Compute points for right half
+    // Offset start angle by ~30° from top so bass peaks create "bunny ears"
+    // at ~10 o'clock / 2 o'clock, leaving a V-notch at top center
+    const startAngle = -Math.PI / 2 + Math.PI / 6; // 30° offset from top
+    const endAngle = Math.PI / 2;                   // bottom
+    const angleSpan = endAngle - startAngle;
+
+    const points: { x: number; y: number }[] = [];
+    const maxH = Math.min(W, H) * 0.22;
+    for (let i = 0; i < numBins; i++) {
+      const n = i / (numBins - 1);
+      const angle = startAngle + n * angleSpan;
+      const barH = Math.min(Math.pow(smoothed[i] * heightScalar * 255, exponent), maxH);
+      const r = emblemR + barH;
+      points.push({ x: Math.cos(angle) * r, y: Math.sin(angle) * r });
+    }
+
+    // Start/end points on the emblem edge for closing the path
+    const topEdgeX = Math.cos(startAngle) * emblemR;
+    const topEdgeY = Math.sin(startAngle) * emblemR;
+    const botEdgeX = Math.cos(endAngle) * emblemR;
+    const botEdgeY = Math.sin(endAngle) * emblemR;
+
+    // ── Single continuous path — junction at right ear, not at V-tip ──
+    ctx.beginPath();
+
+    // Start at first right spectrum point (right ear)
+    ctx.moveTo(points[0].x, points[0].y);
+
+    // Right side spectrum: smooth curves downward
+    for (let i = 1; i < numBins; i++) {
+      const midX = (points[i - 1].x + points[i].x) / 2;
+      const midY = (points[i - 1].y + points[i].y) / 2;
+      ctx.quadraticCurveTo(points[i - 1].x, points[i - 1].y, midX, midY);
+    }
+    ctx.lineTo(points[numBins - 1].x, points[numBins - 1].y);
+
+    // Back to emblem edge at bottom
+    ctx.lineTo(botEdgeX, botEdgeY);
+
+    // Left side spectrum: mirror, smooth curves upward
+    ctx.lineTo(-points[numBins - 1].x, points[numBins - 1].y);
+    for (let i = numBins - 2; i >= 0; i--) {
+      const px = -points[i].x;
+      const py = points[i].y;
+      const prevX = -points[i + 1].x;
+      const prevY = points[i + 1].y;
+      const midX = (prevX + px) / 2;
+      const midY = (prevY + py) / 2;
+      ctx.quadraticCurveTo(prevX, prevY, midX, midY);
+    }
+    ctx.lineTo(-points[0].x, points[0].y);
+
+    // Inward to emblem edge at left ear
+    ctx.lineTo(-topEdgeX, topEdgeY);
+
+    // Continuous arc across top: left ear → through top → right ear (no junction at V-tip)
+    ctx.arc(0, 0, emblemR, Math.PI - startAngle, startAngle, false);
+
+    // closePath: radial line from emblem edge at right ear to first spectrum point
+    ctx.closePath();
+    ctx.fill();
+
+    ctx.restore();
+  }
+
+  // Emblem pulse ring (white glow at emblem edge)
+  ctx.strokeStyle = hexToRgba("#ffffff", 0.3 + energy * 0.5);
+  ctx.lineWidth = 2;
+  ctx.shadowColor = "#ffffff";
+  ctx.shadowBlur = glowRadius;
+  ctx.beginPath();
+  ctx.arc(0, 0, emblemR, 0, Math.PI * 2);
+  ctx.stroke();
+  ctx.shadowBlur = 0;
+
+  ctx.restore();
+}
+
+// ─── 14. Neon Pulse (GLSL shader) ───────────────────────────────────
 
 import { renderNeonPulse } from "./webgl-ring";
+import { renderShader } from "./webgl-shaders";
+import { FRAG as AURORA_FRAG } from "./shaders/aurora-streams.glsl";
+import { FRAG as SPIRAL_FRAG } from "./shaders/sonic-spiral.glsl";
+import { FRAG as MANDALA_FRAG } from "./shaders/mandala-bloom.glsl";
+import { FRAG as CRYSTAL_FRAG } from "./shaders/crystal-lattice.glsl";
+import { FRAG as DESCENT_FRAG } from "./shaders/infinite-descent.glsl";
 
 export function drawNeonPulse({ ctx, W, H, cx, cy, freq, config, t }: RendererArgs) {
   const shaderCanvas = renderNeonPulse({
@@ -723,11 +900,109 @@ export function drawNeonPulse({ ctx, W, H, cx, cy, freq, config, t }: RendererAr
   });
 
   if (shaderCanvas) {
-    // Composite the WebGL output onto our 2D canvas
+    // Composite the WebGL output with transparency onto our 2D canvas
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
     ctx.drawImage(shaderCanvas as CanvasImageSource, 0, 0, W, H);
+    ctx.restore();
   } else {
     // Fallback: draw a simple ring if WebGL fails
     drawNeonRing({ ctx, W, H, cx, cy, freq, config, t });
+  }
+}
+
+// ─── 14. Aurora Streams (GLSL shader) ───────────────────────────────
+
+export function drawAuroraStreams({ ctx, W, H, cx, cy, freq, config, t }: RendererArgs) {
+  const shaderCanvas = renderShader("aurora-streams", AURORA_FRAG, {
+    W, H, t, freq,
+    color1: config.waveColor1,
+    color2: config.waveColor2,
+    accent: config.accentColor,
+  });
+  if (shaderCanvas) {
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    ctx.drawImage(shaderCanvas as CanvasImageSource, 0, 0, W, H);
+    ctx.restore();
+  } else {
+    drawMinimalWave({ ctx, W, H, cx, cy, freq, config, t });
+  }
+}
+
+// ─── 15. Sonic Spiral (GLSL shader) ────────────────────────────────
+
+export function drawSonicSpiral({ ctx, W, H, cx, cy, freq, config, t }: RendererArgs) {
+  const shaderCanvas = renderShader("sonic-spiral", SPIRAL_FRAG, {
+    W, H, t, freq,
+    color1: config.waveColor1,
+    color2: config.waveColor2,
+    accent: config.accentColor,
+  });
+  if (shaderCanvas) {
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    ctx.drawImage(shaderCanvas as CanvasImageSource, 0, 0, W, H);
+    ctx.restore();
+  } else {
+    drawNeonRing({ ctx, W, H, cx, cy, freq, config, t });
+  }
+}
+
+// ─── 16. Mandala Bloom (GLSL shader) ───────────────────────────────
+
+export function drawMandalaBloom({ ctx, W, H, cx, cy, freq, config, t }: RendererArgs) {
+  const shaderCanvas = renderShader("mandala-bloom", MANDALA_FRAG, {
+    W, H, t, freq,
+    color1: config.waveColor1,
+    color2: config.waveColor2,
+    accent: config.accentColor,
+  });
+  if (shaderCanvas) {
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    ctx.drawImage(shaderCanvas as CanvasImageSource, 0, 0, W, H);
+    ctx.restore();
+  } else {
+    drawNeonRing({ ctx, W, H, cx, cy, freq, config, t });
+  }
+}
+
+// ─── 17. Crystal Lattice (GLSL shader) ─────────────────────────────
+
+export function drawCrystalLattice({ ctx, W, H, cx, cy, freq, config, t }: RendererArgs) {
+  const shaderCanvas = renderShader("crystal-lattice", CRYSTAL_FRAG, {
+    W, H, t, freq,
+    color1: config.waveColor1,
+    color2: config.waveColor2,
+    accent: config.accentColor,
+  });
+  if (shaderCanvas) {
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    ctx.drawImage(shaderCanvas as CanvasImageSource, 0, 0, W, H);
+    ctx.restore();
+  } else {
+    drawForestLights({ ctx, W, H, cx, cy, freq, config, t });
+  }
+}
+
+// ─── 18. Infinite Descent (GLSL shader) ────────────────────────────
+
+export function drawInfiniteDescent({ ctx, W, H, cx, cy, freq, config, t }: RendererArgs) {
+  const shaderCanvas = renderShader("infinite-descent", DESCENT_FRAG, {
+    W, H, t, freq,
+    color1: config.waveColor1,
+    color2: config.waveColor2,
+    accent: config.accentColor,
+  });
+  if (shaderCanvas) {
+    ctx.save();
+    ctx.globalCompositeOperation = "lighter";
+    ctx.drawImage(shaderCanvas as CanvasImageSource, 0, 0, W, H);
+    ctx.restore();
+  } else {
+    drawMagmaFlow({ ctx, W, H, cx, cy, freq, config, t });
   }
 }
 
@@ -747,7 +1022,13 @@ const RENDERERS: Record<string, (args: RendererArgs) => void> = {
   "forest-lights": drawForestLights,
   "magma-flow": drawMagmaFlow,
   "neon-tunnel": drawNeonTunnel,
+  "trap-nation": drawTrapNation,
   "neon-pulse": drawNeonPulse,
+  "aurora-streams": drawAuroraStreams,
+  "sonic-spiral": drawSonicSpiral,
+  "mandala-bloom": drawMandalaBloom,
+  "crystal-lattice": drawCrystalLattice,
+  "infinite-descent": drawInfiniteDescent,
 };
 
 export function renderPreset(presetId: string | null | undefined, args: RendererArgs) {

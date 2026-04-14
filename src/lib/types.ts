@@ -37,6 +37,17 @@ export interface ProjectConfig {
   logoScale: number;
   logoBorderRadius: number;
 
+  // Overlay (corner image/logo/CTA)
+  overlayEnabled: boolean;
+  overlayPosition: "top-left" | "top-right" | "bottom-left" | "bottom-right";
+  overlayScale: number;
+  overlayOpacity: number;
+  overlayOffsetX: number; // -50 to 50, percentage of canvas width
+  overlayOffsetY: number; // -50 to 50, percentage of canvas height
+
+  // Background type
+  backgroundType: "image" | "video";
+
   // Beat effects
   beatShake: boolean;
   beatZoom: boolean;
@@ -76,6 +87,15 @@ export const DEFAULT_PROJECT_CONFIG: ProjectConfig = {
 
   logoScale: 1.0,
   logoBorderRadius: 50,
+
+  overlayEnabled: false,
+  overlayPosition: "bottom-right",
+  overlayScale: 0.5,
+  overlayOpacity: 0.8,
+  overlayOffsetX: 0,
+  overlayOffsetY: 0,
+
+  backgroundType: "image",
 
   beatShake: true,
   beatZoom: true,

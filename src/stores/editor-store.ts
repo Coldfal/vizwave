@@ -15,6 +15,7 @@ interface EditorState {
   audioDuration: number;
   isPlaying: boolean;
   currentTime: number;
+  seekTo: number | null; // set to a time to trigger a seek
 
   // UI state
   activePanel: string;
@@ -42,6 +43,7 @@ export const useEditorStore = create<EditorState>((set) => ({
   audioDuration: 0,
   isPlaying: false,
   currentTime: 0,
+  seekTo: null,
 
   activePanel: "preset",
   previewQuality: "480p",

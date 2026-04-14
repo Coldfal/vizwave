@@ -1,5 +1,6 @@
 "use client";
 
+import { useRef } from "react";
 import { useEditorStore } from "@/stores/editor-store";
 import { Button } from "@/components/ui/button";
 import { Play, Pause, SkipBack } from "lucide-react";
@@ -10,11 +11,20 @@ export function PlaybackControls() {
   const currentTime = useEditorStore((s) => s.currentTime);
   const audioDuration = useEditorStore((s) => s.audioDuration);
   const audioUrl = useEditorStore((s) => s.audioUrl);
+  const barRef = useRef<HTMLDivElement>(null);
 
   function formatTime(seconds: number) {
     const m = Math.floor(seconds / 60);
     const s = Math.floor(seconds % 60);
     return `${m}:${s.toString().padStart(2, "0")}`;
+  }
+
+  function seek(e: React.MouseEvent<HTMLDivElement>) {
+    if (!barRef.current || audioDuration <= 0) return;
+    const rect = barRef.current.getBoundingClientRect();
+    const ratio = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+    const seekTime = ratio * audioDuration;
+    useEditorStore.setState({ currentTime: seekTime, seekTo: seekTime });
   }
 
   const progress = audioDuration > 0 ? (currentTime / audioDuration) * 100 : 0;
@@ -28,7 +38,7 @@ export function PlaybackControls() {
           className="h-8 w-8"
           disabled={!audioUrl}
           onClick={() => {
-            useEditorStore.setState({ currentTime: 0 });
+            useEditorStore.setState({ currentTime: 0, seekTo: 0 });
           }}
         >
           <SkipBack className="h-4 w-4" />
@@ -52,10 +62,34 @@ export function PlaybackControls() {
         <span className="w-10 text-xs tabular-nums text-muted-foreground">
           {formatTime(currentTime)}
         </span>
-        <div className="relative h-1.5 flex-1 rounded-full bg-muted">
+        <div
+          ref={barRef}
+          className="relative h-1.5 flex-1 cursor-pointer rounded-full bg-muted"
+          onClick={seek}
+          onMouseDown={(e) => {
+            seek(e);
+            const onMove = (ev: MouseEvent) => {
+              if (!barRef.current || audioDuration <= 0) return;
+              const rect = barRef.current.getBoundingClientRect();
+              const ratio = Math.max(0, Math.min(1, (ev.clientX - rect.left) / rect.width));
+              const seekTime = ratio * audioDuration;
+              useEditorStore.setState({ currentTime: seekTime, seekTo: seekTime });
+            };
+            const onUp = () => {
+              window.removeEventListener("mousemove", onMove);
+              window.removeEventListener("mouseup", onUp);
+            };
+            window.addEventListener("mousemove", onMove);
+            window.addEventListener("mouseup", onUp);
+          }}
+        >
           <div
-            className="absolute inset-y-0 left-0 rounded-full bg-primary transition-all"
+            className="absolute inset-y-0 left-0 rounded-full bg-primary"
             style={{ width: `${progress}%` }}
+          />
+          <div
+            className="absolute top-1/2 -translate-y-1/2 h-3 w-3 rounded-full bg-primary shadow-sm"
+            style={{ left: `${progress}%`, marginLeft: "-6px" }}
           />
         </div>
         <span className="w-10 text-xs tabular-nums text-muted-foreground">

@@ -69,6 +69,10 @@ export function PreviewCanvas() {
   const logoLoadedRef = useRef<string | null>(null);
   const bgImgRef = useRef<HTMLImageElement | null>(null);
   const bgLoadedRef = useRef<string | null>(null);
+  const bgVideoRef = useRef<HTMLVideoElement | null>(null);
+  const bgVideoLoadedRef = useRef<string | null>(null);
+  const overlayImgRef = useRef<HTMLImageElement | null>(null);
+  const overlayLoadedRef = useRef<string | null>(null);
 
   const config = useEditorStore((s) => s.config);
   const audioUrl = useEditorStore((s) => s.audioUrl);
@@ -120,6 +124,63 @@ export function PreviewCanvas() {
     img.src = bgUrl;
   }, [project?.backgroundUrl, project?.logoUrl]);
 
+  // Load background video
+  useEffect(() => {
+    if (config.backgroundType !== "video") {
+      if (bgVideoRef.current) {
+        bgVideoRef.current.pause();
+        bgVideoRef.current.src = "";
+      }
+      bgVideoRef.current = null;
+      bgVideoLoadedRef.current = null;
+      return;
+    }
+    const bgUrl = project?.backgroundUrl;
+    if (!bgUrl) {
+      bgVideoRef.current = null;
+      bgVideoLoadedRef.current = null;
+      return;
+    }
+    if (bgUrl === bgVideoLoadedRef.current) return;
+
+    const video = document.createElement("video");
+    video.crossOrigin = "anonymous";
+    video.loop = true;
+    video.muted = true;
+    video.playsInline = true;
+    video.src = bgUrl;
+    video.play().catch(() => {});
+    bgVideoRef.current = video;
+    bgVideoLoadedRef.current = bgUrl;
+
+    return () => {
+      video.pause();
+      video.src = "";
+    };
+  }, [project?.backgroundUrl, config.backgroundType]);
+
+  // Load overlay image
+  useEffect(() => {
+    const overlayUrl = project?.overlayUrl;
+    if (!overlayUrl) {
+      overlayImgRef.current = null;
+      overlayLoadedRef.current = null;
+      return;
+    }
+    if (overlayUrl === overlayLoadedRef.current) return;
+
+    const img = new Image();
+    img.crossOrigin = "anonymous";
+    img.onload = () => {
+      overlayImgRef.current = img;
+      overlayLoadedRef.current = overlayUrl;
+    };
+    img.onerror = () => {
+      overlayImgRef.current = null;
+    };
+    img.src = overlayUrl;
+  }, [project?.overlayUrl]);
+
   // Set up audio element
   useEffect(() => {
     if (!audioUrl) return;
@@ -162,6 +223,17 @@ export function PreviewCanvas() {
       audio.pause();
     }
   }, [isPlaying, config.waveformSmoothing]);
+
+  // Seek handling
+  const seekTo = useEditorStore((s) => s.seekTo);
+  useEffect(() => {
+    if (seekTo === null) return;
+    const audio = audioRef.current;
+    if (audio) {
+      audio.currentTime = seekTo;
+    }
+    useEditorStore.setState({ seekTo: null });
+  }, [seekTo]);
 
   // Time tracking
   useEffect(() => {
@@ -221,9 +293,11 @@ export function PreviewCanvas() {
       ctx.fillStyle = config.backgroundColor;
       ctx.fillRect(0, 0, W, H);
 
-      // Background image (blurred + darkened)
-      if (bgImgRef.current) {
-        drawBackgroundImage(ctx, W, H, bgImgRef.current, config);
+      // Background image or video (blurred + darkened)
+      if (config.backgroundType === "video" && bgVideoRef.current && bgVideoRef.current.readyState >= 2) {
+        drawBackgroundSource(ctx, W, H, bgVideoRef.current, config);
+      } else if (bgImgRef.current) {
+        drawBackgroundSource(ctx, W, H, bgImgRef.current, config);
       }
 
       // Apply camera shake + zoom
@@ -259,6 +333,11 @@ export function PreviewCanvas() {
       drawText(ctx, W, H, config);
 
       ctx.restore(); // end camera shake/zoom
+
+      // Corner overlay (drawn on top of everything, outside camera shake)
+      if (config.overlayEnabled && overlayImgRef.current) {
+        drawCornerOverlay(ctx, W, H, overlayImgRef.current, config);
+      }
 
       animFrameRef.current = requestAnimationFrame(draw);
     },
@@ -299,27 +378,30 @@ export function PreviewCanvas() {
   );
 }
 
-// ─── Background image (blurred + darkened) ──────────────────────────
+// ─── Background image/video (blurred + darkened) ───────────────────
 
-function drawBackgroundImage(
+function drawBackgroundSource(
   ctx: CanvasRenderingContext2D,
   W: number,
   H: number,
-  img: HTMLImageElement,
+  source: HTMLImageElement | HTMLVideoElement,
   config: { backgroundBlur: number; backgroundDarken: number }
 ) {
   ctx.save();
 
-  // Cover-fit the image
-  const imgAspect = img.width / img.height;
+  // Cover-fit the source
+  const srcW = source instanceof HTMLVideoElement ? source.videoWidth : source.width;
+  const srcH = source instanceof HTMLVideoElement ? source.videoHeight : source.height;
+  if (srcW === 0 || srcH === 0) { ctx.restore(); return; }
+  const imgAspect = srcW / srcH;
   const canvasAspect = W / H;
-  let sx = 0, sy = 0, sw = img.width, sh = img.height;
+  let sx = 0, sy = 0, sw = srcW, sh = srcH;
   if (imgAspect > canvasAspect) {
-    sw = img.height * canvasAspect;
-    sx = (img.width - sw) / 2;
+    sw = srcH * canvasAspect;
+    sx = (srcW - sw) / 2;
   } else {
-    sh = img.width / canvasAspect;
-    sy = (img.height - sh) / 2;
+    sh = srcW / canvasAspect;
+    sy = (srcH - sh) / 2;
   }
 
   // Scale blur to canvas size (blur value is authored for 960px, scale for actual)
@@ -333,7 +415,7 @@ function drawBackgroundImage(
 
   // Draw oversized to hide blur edge artifacts
   const pad = blurPx > 0 ? blurPx * 2.5 : 0;
-  ctx.drawImage(img, sx, sy, sw, sh, -pad, -pad, W + pad * 2, H + pad * 2);
+  ctx.drawImage(source, sx, sy, sw, sh, -pad, -pad, W + pad * 2, H + pad * 2);
   ctx.filter = "none";
 
   // Darken overlay
@@ -399,15 +481,8 @@ function drawCenterLogo(
     }
     ctx.drawImage(logoImg, sx, sy, sw, sh, x, y, size, size);
 
-    // Border
     ctx.restore();
     ctx.save();
-    ctx.strokeStyle = hexToRgba(config.waveColor1, 0.3 + beatEnergy * 0.3);
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    roundedRect(ctx, x, y, size, size, radius);
-    ctx.closePath();
-    ctx.stroke();
   } else {
     // Placeholder: dark circle with subtle icon
     ctx.beginPath();
@@ -503,6 +578,59 @@ function drawText(
   ctx.font = `${config.fontSize * 0.65}px sans-serif`;
   ctx.globalAlpha = 0.6;
   ctx.fillText(config.trackName, W / 2, baseY + config.fontSize * 0.85);
+
+  ctx.restore();
+}
+
+// ─── Corner overlay ─────────────────────────────────────────────────
+
+function drawCornerOverlay(
+  ctx: CanvasRenderingContext2D,
+  W: number,
+  H: number,
+  img: HTMLImageElement,
+  config: { overlayPosition: string; overlayScale: number; overlayOpacity: number; overlayOffsetX: number; overlayOffsetY: number }
+) {
+  ctx.save();
+
+  const maxSize = Math.min(W, H) * 0.12 * config.overlayScale;
+  const aspect = img.width / img.height;
+  let drawW: number, drawH: number;
+  if (aspect >= 1) {
+    drawW = maxSize;
+    drawH = maxSize / aspect;
+  } else {
+    drawH = maxSize;
+    drawW = maxSize * aspect;
+  }
+
+  const margin = W * 0.03;
+  let x: number, y: number;
+  switch (config.overlayPosition) {
+    case "top-left":
+      x = margin;
+      y = margin;
+      break;
+    case "top-right":
+      x = W - drawW - margin;
+      y = margin;
+      break;
+    case "bottom-left":
+      x = margin;
+      y = H - drawH - margin;
+      break;
+    default: // bottom-right
+      x = W - drawW - margin;
+      y = H - drawH - margin;
+  }
+
+  // Apply user offset (percentage of canvas dimensions)
+  x += (config.overlayOffsetX / 100) * W;
+  y += (config.overlayOffsetY / 100) * H;
+
+  ctx.globalAlpha = config.overlayOpacity;
+  ctx.drawImage(img, x, y, drawW, drawH);
+  ctx.globalAlpha = 1;
 
   ctx.restore();
 }

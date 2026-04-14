@@ -28,19 +28,51 @@ export function AudioPanel() {
       return;
     }
 
-    const url = URL.createObjectURL(file);
-    setAudioFile(file, url);
+    // Use blob URL for playback, upload to server for persistence
+    const blobUrl = URL.createObjectURL(file);
+    setAudioFile(file, blobUrl);
+
+    // Upload audio file to server
+    const formData = new FormData();
+    formData.append("file", file);
+    formData.append("type", "audio");
+    fetch("/api/upload", { method: "POST", body: formData })
+      .then((r) => r.json())
+      .then((data) => {
+        if (data.url) {
+          // Replace blob URL with persisted URL
+          setAudioFile(file, data.url);
+          useEditorStore.setState((s) => ({
+            project: s.project ? { ...s.project, audioUrl: data.url } : null,
+            isDirty: true,
+          }));
+        }
+      })
+      .catch(() => {
+        // Fallback: keep blob URL for this session
+        useEditorStore.setState((s) => ({
+          project: s.project ? { ...s.project, audioUrl: blobUrl } : null,
+          isDirty: true,
+        }));
+      });
 
     // Get duration
-    const audio = new Audio(url);
+    const audio = new Audio(blobUrl);
     audio.addEventListener("loadedmetadata", () => {
       setAudioDuration(audio.duration);
+      useEditorStore.setState((s) => ({
+        project: s.project ? { ...s.project, audioDuration: audio.duration } : null,
+      }));
     });
   }
 
   function clearAudio() {
     setAudioFile(null, null);
     setAudioDuration(0);
+    useEditorStore.setState((s) => ({
+      project: s.project ? { ...s.project, audioUrl: null, audioDuration: 0 } : null,
+      isDirty: true,
+    }));
     if (inputRef.current) inputRef.current.value = "";
   }
 
