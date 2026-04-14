@@ -1,0 +1,97 @@
+export interface ProjectConfig {
+  // Visualizer
+  waveformScale: number;
+  waveformSmoothing: number;
+  reactivity: number;
+
+  // Colors
+  waveColor1: string;
+  waveColor2: string;
+  backgroundColor: string;
+  accentColor: string;
+
+  // Text
+  artistName: string;
+  trackName: string;
+  fontFamily: string;
+  fontSize: number;
+  textPosition: "top" | "bottom" | "center";
+  textColor: string;
+
+  // Backdrop
+  backgroundFit: "cover" | "contain" | "fill";
+  reflection: "none" | "2-way" | "4-way";
+  backgroundRotate: number;
+  backgroundFilter: boolean;
+  backgroundDrift: boolean;
+  backgroundRumble: boolean;
+  backgroundBlur: number;
+  backgroundDarken: number;
+
+  // Elements
+  particles: boolean;
+  particleDensity: number;
+  particleColor: string;
+
+  // Logo
+  logoScale: number;
+  logoBorderRadius: number;
+
+  // Beat effects
+  beatShake: boolean;
+  beatZoom: boolean;
+  beatShakeIntensity: number;
+  beatZoomIntensity: number;
+}
+
+export const DEFAULT_PROJECT_CONFIG: ProjectConfig = {
+  waveformScale: 1.0,
+  waveformSmoothing: 0.7,
+  reactivity: 1.0,
+
+  waveColor1: "#ffffff",
+  waveColor2: "#a855f7",
+  backgroundColor: "#0f0f1a",
+  accentColor: "#ec4899",
+
+  artistName: "Artist Name",
+  trackName: "Track Name",
+  fontFamily: "Geist",
+  fontSize: 32,
+  textPosition: "bottom",
+  textColor: "#ffffff",
+
+  backgroundFit: "cover",
+  reflection: "none",
+  backgroundRotate: 0,
+  backgroundFilter: false,
+  backgroundDrift: false,
+  backgroundRumble: false,
+  backgroundBlur: 20,
+  backgroundDarken: 0.7,
+
+  particles: true,
+  particleDensity: 50,
+  particleColor: "#ffffff",
+
+  logoScale: 1.0,
+  logoBorderRadius: 50,
+
+  beatShake: true,
+  beatZoom: true,
+  beatShakeIntensity: 0.6,
+  beatZoomIntensity: 0.5,
+};
+
+export interface AudioWaveformData {
+  sampleRate: number;
+  duration: number;
+  fps: number;
+  frameCount: number;
+  amplitude: number[];    // 0-1 per frame
+  bass: number[];         // 0-1 per frame (20-250Hz)
+  mid: number[];          // 0-1 per frame (250-2kHz)
+  treble: number[];       // 0-1 per frame (2-16kHz)
+  beats: number[];        // frame indices of detected beats
+  spectrum: number[][];   // per-frame: array of ~64 frequency bins, 0-1
+}
