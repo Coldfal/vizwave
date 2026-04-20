@@ -81,6 +81,16 @@ export const projects = sqliteTable("projects", {
   updatedAt: integer("updated_at", { mode: "timestamp" }).$defaultFn(() => new Date()).notNull(),
 });
 
+// User-saved custom presets — named snapshots of an editor config.
+export const userPresets = sqliteTable("user_presets", {
+  id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
+  userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
+  name: text("name").notNull(),
+  presetId: text("preset_id").notNull(), // base visualizer preset slug
+  config: text("config").notNull(), // JSON of ProjectConfig
+  createdAt: integer("created_at", { mode: "timestamp" }).$defaultFn(() => new Date()).notNull(),
+});
+
 export const renderJobs = sqliteTable("render_jobs", {
   id: text("id").primaryKey().$defaultFn(() => crypto.randomUUID()),
   projectId: text("project_id").notNull().references(() => projects.id, { onDelete: "cascade" }),
@@ -101,4 +111,6 @@ export type NewUser = typeof users.$inferInsert;
 export type Project = typeof projects.$inferSelect;
 export type NewProject = typeof projects.$inferInsert;
 export type Preset = typeof presets.$inferSelect;
+export type UserPreset = typeof userPresets.$inferSelect;
+export type NewUserPreset = typeof userPresets.$inferInsert;
 export type RenderJob = typeof renderJobs.$inferSelect;

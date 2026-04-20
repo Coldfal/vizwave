@@ -12,14 +12,144 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
+import type { ProjectConfig } from "@/lib/types";
 
 export function ElementsPanel() {
   const config = useEditorStore((s) => s.config);
   const updateConfig = useEditorStore((s) => s.updateConfig);
+  const presetId = useEditorStore((s) => s.project?.presetId);
+  const isLinearPreset = presetId === "linear-bars" || presetId === "linear-dots";
 
   return (
     <div className="space-y-6">
       <h3 className="text-sm font-semibold">Elements & Effects</h3>
+
+      {/* Linear Layout — only for linear presets */}
+      {isLinearPreset && (
+        <div className="space-y-3">
+          <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+            Linear Layout
+          </h4>
+          <div className="space-y-2">
+            <Label className="text-xs">Position</Label>
+            <div className="grid grid-cols-2 gap-1.5">
+              {([
+                { id: "center", label: "Center" },
+                { id: "bottom", label: "Bottom" },
+              ] as const).map((p) => (
+                <button
+                  key={p.id}
+                  onClick={() => updateConfig({ linearPosition: p.id })}
+                  className={`rounded-md border px-3 py-1.5 text-xs transition-colors ${
+                    config.linearPosition === p.id
+                      ? "border-primary bg-primary/10 text-primary"
+                      : "border-border/50 text-muted-foreground hover:border-border hover:text-foreground"
+                  }`}
+                >
+                  {p.label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="space-y-2">
+            <Label className="text-xs">
+              Repeat across screen: {config.linearRepeat}
+            </Label>
+            <Slider
+              value={[config.linearRepeat]}
+              onValueChange={(v) => updateConfig({ linearRepeat: Array.isArray(v) ? v[0] : v })}
+              min={1}
+              max={10}
+              step={1}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label className="text-xs">
+              Width: {Math.round(config.linearWidth * 100)}%
+            </Label>
+            <Slider
+              value={[config.linearWidth]}
+              onValueChange={(v) => updateConfig({ linearWidth: Array.isArray(v) ? v[0] : v })}
+              min={0.3}
+              max={1.0}
+              step={0.01}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label className="text-xs">
+              Vertical Offset: {(config.linearYOffset * 100).toFixed(0)}%
+            </Label>
+            <Slider
+              value={[config.linearYOffset]}
+              onValueChange={(v) => updateConfig({ linearYOffset: Array.isArray(v) ? v[0] : v })}
+              min={-0.4}
+              max={0.4}
+              step={0.01}
+            />
+          </div>
+          <div className="space-y-2">
+            <Label className="text-xs">Bar/Dot Color</Label>
+            <div className="flex items-center gap-2">
+              <input
+                type="color"
+                value={config.linearBarColor}
+                onChange={(e) => updateConfig({ linearBarColor: e.target.value })}
+                className="h-8 w-12 rounded border border-border/50 bg-transparent"
+              />
+              <Input
+                value={config.linearBarColor}
+                onChange={(e) => updateConfig({ linearBarColor: e.target.value })}
+                className="h-8 text-xs"
+              />
+            </div>
+          </div>
+          <div className="space-y-2">
+            <Label className="text-xs">Center Text (splits visualizer)</Label>
+            <Select
+              value={config.linearCenterTextSource}
+              onValueChange={(v) =>
+                updateConfig({
+                  linearCenterTextSource: v as ProjectConfig["linearCenterTextSource"],
+                })
+              }
+            >
+              <SelectTrigger className="h-8 text-xs">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="none">None</SelectItem>
+                <SelectItem value="artist">Artist Name</SelectItem>
+                <SelectItem value="track">Track Name</SelectItem>
+                <SelectItem value="custom">Custom text</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+          {config.linearCenterTextSource === "custom" && (
+            <div className="space-y-2">
+              <Input
+                value={config.linearCenterText}
+                onChange={(e) => updateConfig({ linearCenterText: e.target.value })}
+                placeholder="e.g. CHILLRAP"
+                className="h-8 text-xs"
+              />
+            </div>
+          )}
+          {config.linearCenterTextSource !== "none" && (
+            <div className="space-y-2">
+              <Label className="text-xs">
+                Center Text Size: {config.linearCenterTextSize}
+              </Label>
+              <Slider
+                value={[config.linearCenterTextSize]}
+                onValueChange={(v) => updateConfig({ linearCenterTextSize: Array.isArray(v) ? v[0] : v })}
+                min={40}
+                max={320}
+                step={4}
+              />
+            </div>
+          )}
+        </div>
+      )}
 
       {/* Particles */}
       <div className="space-y-3">
@@ -32,6 +162,34 @@ export function ElementsPanel() {
         </div>
         {config.particles && (
           <>
+            <div className="space-y-2">
+              <Label className="text-xs">Style</Label>
+              <div className="grid grid-cols-3 gap-1.5">
+                {(
+                  [
+                    { id: "floating", label: "Floating", icon: "~" },
+                    { id: "snow", label: "Snow", icon: "*" },
+                    { id: "fireflies", label: "Fireflies", icon: "o" },
+                    { id: "rain", label: "Rain", icon: "|" },
+                    { id: "stars", label: "Stars", icon: "+" },
+                    { id: "smoke", label: "Smoke", icon: "%" },
+                  ] as const
+                ).map((s) => (
+                  <button
+                    key={s.id}
+                    onClick={() => updateConfig({ particleStyle: s.id })}
+                    className={`flex flex-col items-center gap-0.5 rounded-md border p-2 text-[10px] transition-colors ${
+                      config.particleStyle === s.id
+                        ? "border-primary bg-primary/10 text-primary"
+                        : "border-border/50 text-muted-foreground hover:border-border hover:text-foreground"
+                    }`}
+                  >
+                    <span className="text-base font-mono">{s.icon}</span>
+                    <span>{s.label}</span>
+                  </button>
+                ))}
+              </div>
+            </div>
             <div className="space-y-2">
               <Label className="text-xs">
                 Density: {config.particleDensity}
@@ -172,6 +330,27 @@ export function ElementsPanel() {
         <h4 className="text-xs font-semibold uppercase tracking-wider text-muted-foreground">
           Visualizer
         </h4>
+        <div className="space-y-2">
+          <Label className="text-xs">Spectrum Fill</Label>
+          <div className="grid grid-cols-2 gap-1.5">
+            {([
+              { id: "filled", label: "Filled" },
+              { id: "outline", label: "Outline" },
+            ] as const).map((s) => (
+              <button
+                key={s.id}
+                onClick={() => updateConfig({ spectrumFill: s.id })}
+                className={`rounded-md border px-3 py-1.5 text-xs transition-colors ${
+                  config.spectrumFill === s.id
+                    ? "border-primary bg-primary/10 text-primary"
+                    : "border-border/50 text-muted-foreground hover:border-border hover:text-foreground"
+                }`}
+              >
+                {s.label}
+              </button>
+            ))}
+          </div>
+        </div>
         <div className="space-y-2">
           <Label className="text-xs">
             Reactivity: {config.reactivity.toFixed(1)}

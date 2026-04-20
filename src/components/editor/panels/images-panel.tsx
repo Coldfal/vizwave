@@ -5,6 +5,7 @@ import { useEditorStore } from "@/stores/editor-store";
 import { Button } from "@/components/ui/button";
 import { Label } from "@/components/ui/label";
 import { Slider } from "@/components/ui/slider";
+import { Switch } from "@/components/ui/switch";
 import {
   Select,
   SelectContent,
@@ -88,7 +89,13 @@ export function ImagesPanel() {
 
       {/* Logo */}
       <div className="space-y-3">
-        <Label>Center Logo</Label>
+        <div className="flex items-center justify-between">
+          <Label>Center Logo</Label>
+          <Switch
+            checked={config.logoEnabled}
+            onCheckedChange={(v) => updateConfig({ logoEnabled: v })}
+          />
+        </div>
         <input
           ref={logoInputRef}
           type="file"
@@ -96,58 +103,62 @@ export function ImagesPanel() {
           className="hidden"
           onChange={(e) => handleImageUpload(e, "logo")}
         />
-        {project?.logoUrl ? (
-          <div className="relative">
-            <img
-              src={project.logoUrl}
-              alt="Logo"
-              className="h-20 w-20 rounded-lg border border-border/50 object-cover"
-            />
-            <Button
-              variant="ghost"
-              size="icon"
-              className="absolute -right-2 -top-2 h-6 w-6 rounded-full bg-destructive/80"
-              onClick={() =>
-                useEditorStore.setState((s) => ({
-                  project: s.project ? { ...s.project, logoUrl: null } : null,
-                  isDirty: true,
-                }))
-              }
-            >
-              <X className="h-3 w-3 text-white" />
-            </Button>
-          </div>
-        ) : (
-          <Button
-            variant="outline"
-            className="w-full"
-            onClick={() => logoInputRef.current?.click()}
-          >
-            <Upload className="mr-2 h-4 w-4" />
-            Upload Logo
-          </Button>
-        )}
+        {config.logoEnabled && (
+          <>
+            {project?.logoUrl ? (
+              <div className="relative">
+                <img
+                  src={project.logoUrl}
+                  alt="Logo"
+                  className="h-20 w-20 rounded-lg border border-border/50 object-cover"
+                />
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="absolute -right-2 -top-2 h-6 w-6 rounded-full bg-destructive/80"
+                  onClick={() =>
+                    useEditorStore.setState((s) => ({
+                      project: s.project ? { ...s.project, logoUrl: null } : null,
+                      isDirty: true,
+                    }))
+                  }
+                >
+                  <X className="h-3 w-3 text-white" />
+                </Button>
+              </div>
+            ) : (
+              <Button
+                variant="outline"
+                className="w-full"
+                onClick={() => logoInputRef.current?.click()}
+              >
+                <Upload className="mr-2 h-4 w-4" />
+                Upload Logo
+              </Button>
+            )}
 
-        <div className="space-y-2">
-          <Label className="text-xs">Logo Scale</Label>
-          <Slider
-            value={[config.logoScale]}
-            onValueChange={(v) => updateConfig({ logoScale: Array.isArray(v) ? v[0] : v })}
-            min={0.3}
-            max={2}
-            step={0.1}
-          />
-        </div>
-        <div className="space-y-2">
-          <Label className="text-xs">Border Radius</Label>
-          <Slider
-            value={[config.logoBorderRadius]}
-            onValueChange={(v) => updateConfig({ logoBorderRadius: Array.isArray(v) ? v[0] : v })}
-            min={0}
-            max={50}
-            step={1}
-          />
-        </div>
+            <div className="space-y-2">
+              <Label className="text-xs">Logo Scale</Label>
+              <Slider
+                value={[config.logoScale]}
+                onValueChange={(v) => updateConfig({ logoScale: Array.isArray(v) ? v[0] : v })}
+                min={0.3}
+                max={2}
+                step={0.1}
+              />
+            </div>
+            <div className="space-y-2">
+              <Label className="text-xs">Border Radius</Label>
+              <Slider
+                value={[config.logoBorderRadius]}
+                onValueChange={(v) => updateConfig({ logoBorderRadius: Array.isArray(v) ? v[0] : v })}
+                min={0}
+                max={100}
+                step={1}
+              />
+            </div>
+          </>
+        )}
       </div>
 
       {/* Background */}

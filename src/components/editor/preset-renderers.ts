@@ -24,9 +24,19 @@ export interface RendererConfig {
   backgroundColor: string;
   reactivity: number;
   waveformScale: number;
+  spectrumFill: "filled" | "outline";
   particles: boolean;
   particleDensity: number;
   particleColor: string;
+
+  // Linear layout
+  linearPosition: "center" | "bottom";
+  linearRepeat: number;
+  linearBarColor: string;
+  linearYOffset: number;
+  linearWidth: number;
+  linearCenterText: string; // resolved text to render (computed in preview-canvas)
+  linearCenterTextSize: number;
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────
@@ -120,52 +130,177 @@ export function drawRadialWaveform({ ctx, W, H, cx, cy, freq, config, t }: Rende
 
 // ─── 2. Linear Bars ──────────────────────────────────────────────────
 
+// Computes the canvas-center text region (if any). Text is drawn once,
+// globally centered. Each band then clips around it if they overlap.
+function computeCenterTextRegion(
+  ctx: CanvasRenderingContext2D,
+  W: number,
+  textY: number,
+  text: string,
+  textSizePx: number,
+  textColor: string,
+) {
+  const trimmed = text.trim();
+  if (!trimmed) return null;
+  ctx.save();
+  ctx.font = `900 ${textSizePx}px sans-serif`;
+  const metrics = ctx.measureText(trimmed);
+  const padding = textSizePx * 0.25;
+  const gapW = metrics.width + padding * 2;
+  const gapStart = W / 2 - gapW / 2;
+  const gapEnd = W / 2 + gapW / 2;
+  ctx.fillStyle = textColor;
+  ctx.textAlign = "center";
+  ctx.textBaseline = "middle";
+  ctx.fillText(trimmed, W / 2, textY);
+  ctx.restore();
+  return { gapStart, gapEnd };
+}
+
+// Given a band [bandStart, bandEnd] and a global text gap [gapStart, gapEnd],
+// return the active segments that don't overlap the gap.
+function segmentsAroundGap(
+  bandStart: number,
+  bandEnd: number,
+  gap: { gapStart: number; gapEnd: number } | null,
+): Array<{ start: number; end: number }> {
+  if (!gap) return [{ start: bandStart, end: bandEnd }];
+  const segs: Array<{ start: number; end: number }> = [];
+  // Left portion
+  if (gap.gapStart > bandStart) {
+    segs.push({ start: bandStart, end: Math.min(gap.gapStart, bandEnd) });
+  }
+  // Right portion
+  if (gap.gapEnd < bandEnd) {
+    segs.push({ start: Math.max(gap.gapEnd, bandStart), end: bandEnd });
+  }
+  // If band is entirely covered by gap, segs is empty
+  return segs.filter((s) => s.end - s.start > 4);
+}
+
+function linearBaseY(H: number, position: "center" | "bottom", yOffset: number) {
+  const base = position === "bottom" ? H * 0.92 : H * 0.65;
+  return base + yOffset * H;
+}
+
 export function drawLinearBars({ ctx, W, H, cx, cy, freq, config, t }: RendererArgs) {
-  const numBars = 64;
-  const bars = resample(freq, numBars);
-  const gap = 3;
-  const totalW = W * 0.8;
-  const barW = (totalW - gap * (numBars - 1)) / numBars;
+  const repeats = Math.max(1, Math.floor(config.linearRepeat || 1));
+  const baseY = linearBaseY(H, config.linearPosition, config.linearYOffset || 0);
+  const maxH = H * (config.linearPosition === "bottom" ? 0.3 : 0.4) * config.reactivity;
+  const barsPerBand = Math.max(8, Math.floor(64 / repeats));
+  const widthFrac = Math.max(0.3, Math.min(1.0, config.linearWidth || 0.9));
+  const totalW = W * widthFrac;
+  const bandW = totalW / repeats;
   const startX = (W - totalW) / 2;
-  const baseY = H * 0.65;
-  const maxH = H * 0.4 * config.reactivity;
+
+  const barColor = config.linearBarColor || config.waveColor1;
+  const glowColor = config.waveColor2;
+  const bars = resample(freq, barsPerBand);
 
   ctx.save();
-  for (let i = 0; i < numBars; i++) {
-    const x = startX + i * (barW + gap);
-    const h = bars[i] * maxH;
-    const n = i / numBars;
 
-    // gradient per bar
-    const grad = ctx.createLinearGradient(x, baseY, x, baseY - h);
-    grad.addColorStop(0, hexToRgba(config.waveColor1, 0.9));
-    grad.addColorStop(1, hexToRgba(config.waveColor2, 0.9));
-    ctx.fillStyle = grad;
-    ctx.fillRect(x, baseY - h, barW, h);
+  // Draw center text once, globally. Get gap region for band clipping.
+  const textSize = config.linearCenterTextSize * (W / 1920);
+  const textY = baseY - maxH / 2;
+  const gap = computeCenterTextRegion(ctx, W, textY, config.linearCenterText, textSize, barColor);
 
-    // reflection
-    ctx.globalAlpha = 0.15;
-    ctx.fillStyle = config.waveColor1;
-    ctx.fillRect(x, baseY + 2, barW, h * 0.3);
-    ctx.globalAlpha = 1;
+  for (let band = 0; band < repeats; band++) {
+    const bandStart = startX + band * bandW;
+    const bandEnd = bandStart + bandW;
+    const segments = segmentsAroundGap(bandStart, bandEnd, gap);
+    const totalActiveW = segments.reduce((s, seg) => s + (seg.end - seg.start), 0);
+    if (totalActiveW <= 0) continue;
 
-    // glow on top of bar
-    if (bars[i] > 0.5) {
-      ctx.shadowColor = config.waveColor2;
-      ctx.shadowBlur = 8;
-      ctx.fillStyle = config.waveColor2;
-      ctx.fillRect(x, baseY - h, barW, 2);
-      ctx.shadowBlur = 0;
+    const segGap = Math.max(2, bandW * 0.008);
+    let idx = 0;
+    for (const seg of segments) {
+      const segW = seg.end - seg.start;
+      const segCount = Math.max(2, Math.round((segW / totalActiveW) * barsPerBand));
+      const bw = (segW - segGap * (segCount - 1)) / segCount;
+      for (let i = 0; i < segCount; i++) {
+        const x = seg.start + i * (bw + segGap);
+        const v = bars[(idx + i) % barsPerBand];
+        const h = v * maxH;
+
+        const grad = ctx.createLinearGradient(x, baseY, x, baseY - h);
+        grad.addColorStop(0, hexToRgba(barColor, 0.95));
+        grad.addColorStop(1, hexToRgba(glowColor, 0.9));
+        ctx.fillStyle = grad;
+        ctx.fillRect(x, baseY - h, bw, h);
+
+        if (v > 0.5) {
+          ctx.shadowColor = glowColor;
+          ctx.shadowBlur = 8;
+          ctx.fillStyle = glowColor;
+          ctx.fillRect(x, baseY - h, bw, 2);
+          ctx.shadowBlur = 0;
+        }
+      }
+      idx += segCount;
     }
   }
 
-  // baseline
-  ctx.strokeStyle = hexToRgba(config.waveColor1, 0.3);
-  ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(startX, baseY);
-  ctx.lineTo(startX + totalW, baseY);
-  ctx.stroke();
+  ctx.restore();
+}
+
+// ─── 2b. Linear Dots ─────────────────────────────────────────────────
+// Each "bar" is a vertical stack of dots. Dots only light up based on
+// the spectrum value (typical LED-meter style).
+
+export function drawLinearDots({ ctx, W, H, cx, cy, freq, config, t }: RendererArgs) {
+  const repeats = Math.max(1, Math.floor(config.linearRepeat || 1));
+  const baseY = linearBaseY(H, config.linearPosition, config.linearYOffset || 0);
+  const maxH = H * (config.linearPosition === "bottom" ? 0.32 : 0.4) * config.reactivity;
+  const barsPerBand = Math.max(8, Math.floor(48 / repeats));
+  const widthFrac = Math.max(0.3, Math.min(1.0, config.linearWidth || 0.9));
+  const totalW = W * widthFrac;
+  const bandW = totalW / repeats;
+  const startX = (W - totalW) / 2;
+  const rowsPerBar = 14;
+
+  const barColor = config.linearBarColor || config.waveColor1;
+  const bars = resample(freq, barsPerBand);
+
+  ctx.save();
+
+  const textSize = config.linearCenterTextSize * (W / 1920);
+  const textY = baseY - maxH / 2;
+  const gap = computeCenterTextRegion(ctx, W, textY, config.linearCenterText, textSize, barColor);
+
+  const drawDotColumn = (x: number, v: number, colW: number) => {
+    const dotSize = Math.min(colW * 0.7, maxH / rowsPerBar * 0.7);
+    const spacing = maxH / rowsPerBar;
+    const activeRows = Math.round(v * rowsPerBar);
+    for (let r = 0; r < rowsPerBar; r++) {
+      const y = baseY - r * spacing - spacing / 2;
+      const lit = r < activeRows;
+      ctx.fillStyle = hexToRgba(barColor, lit ? 0.95 : 0.12);
+      ctx.beginPath();
+      ctx.arc(x, y, dotSize / 2, 0, Math.PI * 2);
+      ctx.fill();
+    }
+  };
+
+  for (let band = 0; band < repeats; band++) {
+    const bandStart = startX + band * bandW;
+    const bandEnd = bandStart + bandW;
+    const segments = segmentsAroundGap(bandStart, bandEnd, gap);
+    const totalActiveW = segments.reduce((s, seg) => s + (seg.end - seg.start), 0);
+    if (totalActiveW <= 0) continue;
+
+    let idx = 0;
+    for (const seg of segments) {
+      const segW = seg.end - seg.start;
+      const segCount = Math.max(2, Math.round((segW / totalActiveW) * barsPerBand));
+      const colW = segW / segCount;
+      for (let i = 0; i < segCount; i++) {
+        const cxCol = seg.start + colW * (i + 0.5);
+        const v = bars[(idx + i) % barsPerBand];
+        drawDotColumn(cxCol, v, colW);
+      }
+      idx += segCount;
+    }
+  }
 
   ctx.restore();
 }
@@ -739,144 +874,99 @@ const TRAP_LAYER_SMOOTHING = [0, 2, 2, 3, 3, 3, 5, 5];
 const TRAP_FRAME_BUFFER: number[][] = [];
 const TRAP_MAX_FRAMES = 8;
 
-// Weighted neighbor smooth matching js.nation's triangular kernel
-function smoothSpectrum(data: number[], margin: number): number[] {
-  if (margin <= 0) return data;
-  const result: number[] = [];
-  for (let i = 0; i < data.length; i++) {
-    let sum = data[i];
-    let weight = 1;
-    for (let j = 1; j <= margin; j++) {
-      const w = (margin - j + 1) * 2;
-      const left = data[Math.max(0, i - j)];
-      const right = data[Math.min(data.length - 1, i + j)];
-      sum += (left + right) * w;
-      weight += w * 2;
+// Direct port of js.nation's weighted smooth — identical logic
+function smoothSpectrum(points: number[], margin: number): number[] {
+  if (margin === 0) return points;
+  const out: number[] = [];
+  for (let i = 0; i < points.length; i++) {
+    let sum = 0;
+    let denom = 0;
+    for (let j = 0; j <= margin; j++) {
+      if (i - j < 0 || i + j > points.length - 1) break;
+      sum += points[i - j] + points[i + j];
+      denom += (margin - j + 1) * 2;
     }
-    result.push(sum / weight);
+    out[i] = sum / denom;
   }
-  return result;
+  return out;
 }
 
 export function drawTrapNation({ ctx, W, H, cx, cy, freq, config, t }: RendererArgs) {
-  // Bass-focused bins: skip sub-bass (0-3), take 40 bins of bass/low-mid
-  // This concentrates energy so the kick peak appears at ~45° from top
-  const bins = freq.slice(4, 44);
-  const numBins = bins.length; // 40
+  // js.nation exact: startBin=8, keepBins=40 — bass/low-mid only
+  const spectrum = freq.slice(8, 48);
+  const len = spectrum.length;
 
-  // Push current frame to history buffer
-  TRAP_FRAME_BUFFER.unshift([...bins]);
-  if (TRAP_FRAME_BUFFER.length > TRAP_MAX_FRAMES) TRAP_FRAME_BUFFER.pop();
+  // Frame buffer for trail delays
+  if (TRAP_FRAME_BUFFER.length >= TRAP_MAX_FRAMES) TRAP_FRAME_BUFFER.shift();
+  TRAP_FRAME_BUFFER.push([...spectrum]);
 
-  // Overall energy for emblem pulse (0-1)
-  const energy = bins.reduce((s, v) => s + v, 0) / numBins;
+  // Multiplier for emblem pulse (js.nation: average energy, S-curve compressed)
+  const avg = spectrum.reduce((s, v) => s + v, 0) / len;
+  const multiplier = Math.pow(avg, 0.8);
 
-  // Emblem radius: wider pulse range for visible breathing
-  const logoSize = Math.min(W, H) * 0.28 * config.waveformScale;
-  const minR = logoSize * 0.45;
-  const maxR = logoSize * 0.58;
-  const emblemR = minR + energy * (maxR - minR);
-
-  // Height scalar: js.nation uses 0.4 at 1920w with 0-255 byte values
-  // Our values are 0-1, so scale accordingly to keep peaks proportional
+  // Emblem radius — scaled down from js.nation (480/600) since our canvas isn't full-screen
   const resMult = W / 1920;
-  const heightScalar = 0.12 * resMult * config.reactivity;
+  const minR = (240 * resMult * config.waveformScale) / 2;
+  const maxR = (300 * resMult * config.waveformScale) / 2;
+  const emblemR = minR + multiplier * (maxR - minR);
 
-  // Glow radius scaled to resolution
+  // Glow — js.nation: glowRadius=25
   const glowRadius = 25 * resMult;
 
   ctx.save();
   ctx.translate(cx, cy);
+  ctx.shadowBlur = glowRadius;
 
-  // Draw layers back to front (layer 7 = green/oldest first, layer 0 = white/current last)
-  for (let layer = 7; layer >= 0; layer--) {
-    const frameIdx = Math.min(layer, TRAP_FRAME_BUFFER.length - 1);
-    const frameData = TRAP_FRAME_BUFFER[frameIdx] || bins;
+  // Draw layers back to front (7=green/oldest → 0=white/current)
+  for (let s = 7; s >= 0; s--) {
+    // js.nation: delays = [0,1,2,3,4,5,6,7] — layer index IS the delay
+    const frameIdx = Math.max(TRAP_FRAME_BUFFER.length - s - 1, 0);
+    const curSpectrum = smoothSpectrum(
+      TRAP_FRAME_BUFFER[frameIdx] || spectrum,
+      TRAP_LAYER_SMOOTHING[s],
+    );
 
-    const smoothed = smoothSpectrum(frameData, TRAP_LAYER_SMOOTHING[layer]);
-    const exponent = TRAP_LAYER_EXPONENTS[layer];
-    const layerColor = TRAP_LAYER_COLORS[layer];
+    const color = TRAP_LAYER_COLORS[s];
+    ctx.fillStyle = color;
+    ctx.shadowColor = color;
 
-    ctx.save();
-    ctx.shadowColor = layerColor;
-    ctx.shadowBlur = glowRadius;
-    ctx.fillStyle = layerColor; // Full opacity — overlapping layers create depth
-
-    // Compute points for right half
-    // Offset start angle by ~30° from top so bass peaks create "bunny ears"
-    // at ~10 o'clock / 2 o'clock, leaving a V-notch at top center
-    const startAngle = -Math.PI / 2 + Math.PI / 6; // 30° offset from top
-    const endAngle = Math.PI / 2;                   // bottom
-    const angleSpan = endAngle - startAngle;
-
+    // js.nation: pow(byteValue * 0.4 * resMult, exponent)
+    // Analyser uses tight dB range (-40 to -30) matching js.nation
+    const heightScale = 25 * resMult * config.reactivity;
     const points: { x: number; y: number }[] = [];
-    const maxH = Math.min(W, H) * 0.22;
-    for (let i = 0; i < numBins; i++) {
-      const n = i / (numBins - 1);
-      const angle = startAngle + n * angleSpan;
-      const barH = Math.min(Math.pow(smoothed[i] * heightScalar * 255, exponent), maxH);
-      const r = emblemR + barH;
+    for (let i = 0; i < len; i++) {
+      const angle = Math.PI * (i / (len - 1)) - Math.PI / 2;
+      const r = emblemR + Math.pow(curSpectrum[i] * heightScale, TRAP_LAYER_EXPONENTS[s]);
       points.push({ x: Math.cos(angle) * r, y: Math.sin(angle) * r });
     }
 
-    // Start/end points on the emblem edge for closing the path
-    const topEdgeX = Math.cos(startAngle) * emblemR;
-    const topEdgeY = Math.sin(startAngle) * emblemR;
-    const botEdgeX = Math.cos(endAngle) * emblemR;
-    const botEdgeY = Math.sin(endAngle) * emblemR;
-
-    // ── Single continuous path — junction at right ear, not at V-tip ──
+    // js.nation drawPoints: two moveTo's in one beginPath, xMult mirrors
     ctx.beginPath();
-
-    // Start at first right spectrum point (right ear)
-    ctx.moveTo(points[0].x, points[0].y);
-
-    // Right side spectrum: smooth curves downward
-    for (let i = 1; i < numBins; i++) {
-      const midX = (points[i - 1].x + points[i].x) / 2;
-      const midY = (points[i - 1].y + points[i].y) / 2;
-      ctx.quadraticCurveTo(points[i - 1].x, points[i - 1].y, midX, midY);
+    for (let neg = 0; neg <= 1; neg++) {
+      const xMult = neg ? -1 : 1;
+      ctx.moveTo(0, points[0].y);
+      for (let i = 1; i < len - 2; i++) {
+        const cpx = xMult * points[i].x;
+        const cpy = points[i].y;
+        const epx = xMult * (points[i].x + points[i + 1].x) / 2;
+        const epy = (points[i].y + points[i + 1].y) / 2;
+        ctx.quadraticCurveTo(cpx, cpy, epx, epy);
+      }
+      ctx.quadraticCurveTo(
+        xMult * points[len - 2].x + neg * 2,
+        points[len - 2].y,
+        xMult * points[len - 1].x,
+        points[len - 1].y,
+      );
     }
-    ctx.lineTo(points[numBins - 1].x, points[numBins - 1].y);
-
-    // Back to emblem edge at bottom
-    ctx.lineTo(botEdgeX, botEdgeY);
-
-    // Left side spectrum: mirror, smooth curves upward
-    ctx.lineTo(-points[numBins - 1].x, points[numBins - 1].y);
-    for (let i = numBins - 2; i >= 0; i--) {
-      const px = -points[i].x;
-      const py = points[i].y;
-      const prevX = -points[i + 1].x;
-      const prevY = points[i + 1].y;
-      const midX = (prevX + px) / 2;
-      const midY = (prevY + py) / 2;
-      ctx.quadraticCurveTo(prevX, prevY, midX, midY);
+    if (config.spectrumFill === "outline") {
+      ctx.strokeStyle = color;
+      ctx.lineWidth = 2.5;
+      ctx.stroke();
+    } else {
+      ctx.fill();
     }
-    ctx.lineTo(-points[0].x, points[0].y);
-
-    // Inward to emblem edge at left ear
-    ctx.lineTo(-topEdgeX, topEdgeY);
-
-    // Continuous arc across top: left ear → through top → right ear (no junction at V-tip)
-    ctx.arc(0, 0, emblemR, Math.PI - startAngle, startAngle, false);
-
-    // closePath: radial line from emblem edge at right ear to first spectrum point
-    ctx.closePath();
-    ctx.fill();
-
-    ctx.restore();
   }
-
-  // Emblem pulse ring (white glow at emblem edge)
-  ctx.strokeStyle = hexToRgba("#ffffff", 0.3 + energy * 0.5);
-  ctx.lineWidth = 2;
-  ctx.shadowColor = "#ffffff";
-  ctx.shadowBlur = glowRadius;
-  ctx.beginPath();
-  ctx.arc(0, 0, emblemR, 0, Math.PI * 2);
-  ctx.stroke();
-  ctx.shadowBlur = 0;
 
   ctx.restore();
 }
@@ -1011,6 +1101,7 @@ export function drawInfiniteDescent({ ctx, W, H, cx, cy, freq, config, t }: Rend
 const RENDERERS: Record<string, (args: RendererArgs) => void> = {
   "radial-waveform": drawRadialWaveform,
   "linear-bars": drawLinearBars,
+  "linear-dots": drawLinearDots,
   "particle-storm": drawParticleStorm,
   "neon-ring": drawNeonRing,
   "minimal-wave": drawMinimalWave,

@@ -1,9 +1,10 @@
 "use client";
 
-import { useRef, useEffect, useCallback } from "react";
+import { useRef, useEffect } from "react";
 import { useEditorStore } from "@/stores/editor-store";
 import { renderPreset, generateProceduralFreq } from "./preset-renderers";
 import type { RendererConfig } from "./preset-renderers";
+import type { ProjectConfig, CustomText } from "@/lib/types";
 
 // ─── Beat detection state ────────────────────────────────────────────
 
@@ -17,12 +18,13 @@ interface BeatState {
 
 function detectBeat(freq: number[], state: BeatState, dt: number, config: { beatShake: boolean; beatZoom: boolean; beatShakeIntensity: number; beatZoomIntensity: number }) {
   // Bass energy (first ~15 bins ≈ 20-300 Hz)
+  // Beat analyser always uses fftSize=2048 (1024 bins) with standard dB range
   const bassSlice = freq.slice(0, 15);
   const bass = bassSlice.reduce((s, v) => s + v, 0) / bassSlice.length;
 
   // Detect beat: sudden bass spike
-  const threshold = 0.15;
-  const isBeat = bass - state.prevBass > threshold && bass > 0.4;
+  const threshold = 0.10;
+  const isBeat = bass - state.prevBass > threshold && bass > 0.25;
   state.prevBass = bass;
 
   // Trigger on beat
@@ -59,6 +61,7 @@ export function PreviewCanvas() {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animFrameRef = useRef<number>(0);
   const analyserRef = useRef<AnalyserNode | null>(null);
+  const beatAnalyserRef = useRef<AnalyserNode | null>(null); // separate analyser for beat detection
   const audioContextRef = useRef<AudioContext | null>(null);
   const sourceRef = useRef<MediaElementAudioSourceNode | null>(null);
   const audioRef = useRef<HTMLAudioElement | null>(null);
@@ -79,6 +82,15 @@ export function PreviewCanvas() {
   const isPlaying = useEditorStore((s) => s.isPlaying);
   const project = useEditorStore((s) => s.project);
   const presetId = project?.presetId;
+
+  // Latest values — read from inside the RAF loop so config/preset changes
+  // don't cancel and restart the animation (which caused flicker / "frozen" appearance).
+  const configRef = useRef<ProjectConfig>(config);
+  const presetIdRef = useRef<string | null | undefined>(presetId);
+  const isPlayingRef = useRef<boolean>(isPlaying);
+  useEffect(() => { configRef.current = config; }, [config]);
+  useEffect(() => { presetIdRef.current = presetId; }, [presetId]);
+  useEffect(() => { isPlayingRef.current = isPlaying; }, [isPlaying]);
 
   // Load logo image
   useEffect(() => {
@@ -208,21 +220,51 @@ export function PreviewCanvas() {
     if (isPlaying) {
       if (!audioContextRef.current) {
         const ctx = new AudioContext();
+
+        // Main analyser for visualizer rendering
         const analyser = ctx.createAnalyser();
-        analyser.fftSize = 2048;
-        analyser.smoothingTimeConstant = config.waveformSmoothing;
+        analyser.fftSize = presetId === "trap-nation" ? 16384 : 2048;
+        analyser.smoothingTimeConstant = presetId === "trap-nation" ? 0.1 : config.waveformSmoothing;
+        if (presetId === "trap-nation") {
+          analyser.minDecibels = -40;
+          analyser.maxDecibels = -30;
+        }
+
+        // Separate analyser for beat detection (standard dB range)
+        const beatAnalyser = ctx.createAnalyser();
+        beatAnalyser.fftSize = 2048;
+        beatAnalyser.smoothingTimeConstant = 0.5;
+
         const source = ctx.createMediaElementSource(audio);
         source.connect(analyser);
+        source.connect(beatAnalyser);
         analyser.connect(ctx.destination);
+
         audioContextRef.current = ctx;
         analyserRef.current = analyser;
+        beatAnalyserRef.current = beatAnalyser;
         sourceRef.current = source;
+      } else if (analyserRef.current) {
+        // Update analyser settings on preset change
+        const a = analyserRef.current;
+        if (presetId === "trap-nation") {
+          a.fftSize = 16384;
+          a.smoothingTimeConstant = 0.1;
+          a.minDecibels = -40;
+          a.maxDecibels = -30;
+        } else {
+          a.fftSize = 2048;
+          a.smoothingTimeConstant = config.waveformSmoothing;
+          a.minDecibels = -100;
+          a.maxDecibels = -30;
+        }
       }
+      audioContextRef.current.resume();
       audio.play().catch(() => {});
     } else {
       audio.pause();
     }
-  }, [isPlaying, config.waveformSmoothing]);
+  }, [isPlaying, config.waveformSmoothing, presetId]);
 
   // Seek handling
   const seekTo = useEditorStore((s) => s.seekTo);
@@ -253,97 +295,8 @@ export function PreviewCanvas() {
     };
   }, [audioUrl]);
 
-  // Render loop
-  const draw = useCallback(
-    (timestamp: number) => {
-      const canvas = canvasRef.current;
-      if (!canvas) return;
-      const ctx = canvas.getContext("2d");
-      if (!ctx) return;
-
-      // Delta time
-      if (!lastFrameRef.current) lastFrameRef.current = timestamp;
-      const dt = Math.min((timestamp - lastFrameRef.current) / 1000, 0.1);
-      lastFrameRef.current = timestamp;
-      timeRef.current += dt;
-      const t = timeRef.current;
-
-      const W = canvas.width;
-      const H = canvas.height;
-      const cx = W / 2;
-      const cy = H / 2;
-
-      // Get frequency data
-      let freq: number[];
-      if (analyserRef.current && isPlaying) {
-        const raw = new Uint8Array(analyserRef.current.frequencyBinCount);
-        analyserRef.current.getByteFrequencyData(raw);
-        freq = Array.from(raw).map((v) => v / 255);
-      } else {
-        freq = generateProceduralFreq(t);
-      }
-
-      // Beat detection
-      const beat = detectBeat(freq, beatRef.current, dt, config);
-      const bs = beatRef.current;
-
-      // ─── Draw ────────────────────────────────────────────────
-
-      // Background: solid color base
-      ctx.fillStyle = config.backgroundColor;
-      ctx.fillRect(0, 0, W, H);
-
-      // Background image or video (blurred + darkened)
-      if (config.backgroundType === "video" && bgVideoRef.current && bgVideoRef.current.readyState >= 2) {
-        drawBackgroundSource(ctx, W, H, bgVideoRef.current, config);
-      } else if (bgImgRef.current) {
-        drawBackgroundSource(ctx, W, H, bgImgRef.current, config);
-      }
-
-      // Apply camera shake + zoom
-      ctx.save();
-      ctx.translate(cx, cy);
-      ctx.scale(bs.zoom, bs.zoom);
-      ctx.translate(-cx + bs.shakeX, -cy + bs.shakeY);
-
-      // Render preset visualizer
-      const rendererConfig: RendererConfig = {
-        waveColor1: config.waveColor1,
-        waveColor2: config.waveColor2,
-        accentColor: config.accentColor,
-        backgroundColor: config.backgroundColor,
-        reactivity: config.reactivity,
-        waveformScale: config.waveformScale,
-        particles: config.particles,
-        particleDensity: config.particleDensity,
-        particleColor: config.particleColor,
-      };
-
-      renderPreset(presetId, { ctx, W, H, cx, cy, freq, config: rendererConfig, t });
-
-      // Particles overlay (skip for particle-based presets)
-      if (config.particles && !["particle-storm", "glitter-storm"].includes(presetId || "")) {
-        drawParticlesOverlay(ctx, W, H, cx, cy, freq, config, t);
-      }
-
-      // ─── Center logo / image (Trap Nation style) ─────────────
-      drawCenterLogo(ctx, cx, cy, W, H, config, logoImgRef.current, beat.bass, bs.energy);
-
-      // Text overlay
-      drawText(ctx, W, H, config);
-
-      ctx.restore(); // end camera shake/zoom
-
-      // Corner overlay (drawn on top of everything, outside camera shake)
-      if (config.overlayEnabled && overlayImgRef.current) {
-        drawCornerOverlay(ctx, W, H, overlayImgRef.current, config);
-      }
-
-      animFrameRef.current = requestAnimationFrame(draw);
-    },
-    [config, presetId, isPlaying]
-  );
-
+  // Mount-once render loop — reads config/preset/isPlaying from refs so the
+  // RAF chain is never interrupted by state changes.
   useEffect(() => {
     const canvas = canvasRef.current;
     if (!canvas) return;
@@ -365,15 +318,269 @@ export function PreviewCanvas() {
       canvas.height = 1080;
     }
 
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+
     lastFrameRef.current = 0;
+
+    const draw = (timestamp: number) => {
+      // Schedule next frame first — guarantees the loop never dies from an
+      // exception in the body.
+      animFrameRef.current = requestAnimationFrame(draw);
+
+      const config = configRef.current;
+      const presetId = presetIdRef.current;
+      const isPlaying = isPlayingRef.current;
+
+      // Delta time
+      if (!lastFrameRef.current) lastFrameRef.current = timestamp;
+      const dt = Math.min((timestamp - lastFrameRef.current) / 1000, 0.1);
+      lastFrameRef.current = timestamp;
+      timeRef.current += dt;
+      const t = timeRef.current;
+
+      const W = canvas.width;
+      const H = canvas.height;
+      const cx = W / 2;
+      const cy = H / 2;
+
+      // Get frequency data
+      let freq: number[];
+      if (analyserRef.current && isPlaying) {
+        const raw = new Uint8Array(analyserRef.current.frequencyBinCount);
+        analyserRef.current.getByteFrequencyData(raw);
+        freq = Array.from(raw).map((v) => v / 255);
+      } else if (presetId === "trap-nation") {
+        freq = new Array(128).fill(0);
+      } else {
+        freq = generateProceduralFreq(t);
+      }
+
+      // Beat detection — uses separate analyser with standard dB range
+      let beatFreq: number[];
+      if (beatAnalyserRef.current && isPlaying) {
+        const beatRaw = new Uint8Array(beatAnalyserRef.current.frequencyBinCount);
+        beatAnalyserRef.current.getByteFrequencyData(beatRaw);
+        beatFreq = Array.from(beatRaw).map((v) => v / 255);
+      } else {
+        beatFreq = freq;
+      }
+      const beat = detectBeat(beatFreq, beatRef.current, dt, config);
+      const bs = beatRef.current;
+
+      // Background: solid color base
+      ctx.fillStyle = config.backgroundColor;
+      ctx.fillRect(0, 0, W, H);
+
+      // Background image or video (blurred + darkened)
+      const hasBg =
+        (config.backgroundType === "video" && bgVideoRef.current && bgVideoRef.current.readyState >= 2) ||
+        bgImgRef.current;
+
+      if (hasBg) {
+        ctx.save();
+
+        if (config.backgroundDrift) {
+          const driftX = Math.sin(t * 0.15) * W * 0.03;
+          const driftY = Math.cos(t * 0.11) * H * 0.02;
+          ctx.translate(driftX, driftY);
+        }
+
+        if (config.backgroundRumble) {
+          const bassAvg = freq.slice(0, 10).reduce((s, v) => s + v, 0) / 10;
+          const rumbleAmt = bassAvg * 6;
+          ctx.translate(
+            (Math.random() - 0.5) * rumbleAmt,
+            (Math.random() - 0.5) * rumbleAmt,
+          );
+        }
+
+        const bgSource =
+          config.backgroundType === "video" && bgVideoRef.current && bgVideoRef.current.readyState >= 2
+            ? bgVideoRef.current
+            : bgImgRef.current!;
+
+        if (config.backgroundFilter) {
+          const avg = freq.reduce((s, v) => s + v, 0) / freq.length;
+          const hue = Math.round(t * 20 + avg * 60) % 360;
+          ctx.filter = `saturate(1.4) hue-rotate(${hue}deg)`;
+        }
+
+        drawBackgroundSource(ctx, W, H, bgSource, config);
+
+        if (config.backgroundFilter) {
+          ctx.filter = "none";
+        }
+
+        ctx.restore();
+      }
+
+      // Apply camera shake + zoom
+      ctx.save();
+      ctx.translate(cx, cy);
+      ctx.scale(bs.zoom, bs.zoom);
+      ctx.translate(-cx + bs.shakeX, -cy + bs.shakeY);
+
+      const rendererConfig: RendererConfig = {
+        waveColor1: config.waveColor1,
+        waveColor2: config.waveColor2,
+        accentColor: config.accentColor,
+        backgroundColor: config.backgroundColor,
+        reactivity: config.reactivity,
+        waveformScale: config.waveformScale,
+        spectrumFill: config.spectrumFill,
+        particles: config.particles,
+        particleDensity: config.particleDensity,
+        particleColor: config.particleColor,
+        linearPosition: config.linearPosition,
+        linearRepeat: config.linearRepeat,
+        linearBarColor: config.linearBarColor,
+        linearYOffset: config.linearYOffset,
+        linearWidth: config.linearWidth,
+        linearCenterText:
+          config.linearCenterTextSource === "artist"
+            ? config.artistName
+            : config.linearCenterTextSource === "track"
+            ? config.trackName
+            : config.linearCenterTextSource === "custom"
+            ? config.linearCenterText
+            : "",
+        linearCenterTextSize: config.linearCenterTextSize,
+      };
+
+      renderPreset(presetId, { ctx, W, H, cx, cy, freq, config: rendererConfig, t });
+
+      if (config.particles && !["particle-storm", "glitter-storm"].includes(presetId || "")) {
+        drawParticlesOverlay(ctx, W, H, cx, cy, freq, config, t);
+      }
+
+      if (config.logoEnabled) {
+        drawCenterLogo(ctx, cx, cy, W, H, config, logoImgRef.current, beat.bass, bs.energy);
+      }
+      drawText(ctx, W, H, config);
+
+      ctx.restore(); // end camera shake/zoom
+
+      if (config.reflection !== "none") {
+        ctx.save();
+        ctx.globalAlpha = 0.35;
+        ctx.translate(W, 0);
+        ctx.scale(-1, 1);
+        ctx.drawImage(canvas, 0, 0);
+        if (config.reflection === "4-way") {
+          ctx.translate(0, H);
+          ctx.scale(1, -1);
+          ctx.drawImage(canvas, 0, 0);
+          ctx.setTransform(1, 0, 0, -1, 0, H);
+          ctx.drawImage(canvas, 0, 0);
+        }
+        ctx.restore();
+      }
+
+      if (config.overlayEnabled && overlayImgRef.current) {
+        drawCornerOverlay(ctx, W, H, overlayImgRef.current, config);
+      }
+
+      // Custom draggable text overlays (drawn on top of everything)
+      for (const txt of config.customTexts) {
+        drawCustomText(ctx, W, H, txt);
+      }
+    };
+
     animFrameRef.current = requestAnimationFrame(draw);
     return () => cancelAnimationFrame(animFrameRef.current);
-  }, [draw]);
+  }, []);
+
+  // Drag state for custom text overlays
+  const dragRef = useRef<{
+    index: number;
+    offsetX: number; // canvas-space offset from text anchor to cursor
+    offsetY: number;
+  } | null>(null);
+
+  // Convert client (mouse) coords to canvas internal coords (1920×1080)
+  const clientToCanvas = (clientX: number, clientY: number) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return { x: 0, y: 0 };
+    const rect = canvas.getBoundingClientRect();
+    const scaleX = canvas.width / rect.width;
+    const scaleY = canvas.height / rect.height;
+    return {
+      x: (clientX - rect.left) * scaleX,
+      y: (clientY - rect.top) * scaleY,
+    };
+  };
+
+  const onMouseDown = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const { x, y } = clientToCanvas(e.clientX, e.clientY);
+    const texts = configRef.current.customTexts;
+    // Hit-test top-most first (reverse order since later items draw on top)
+    for (let i = texts.length - 1; i >= 0; i--) {
+      if (hitTestCustomText(ctx, canvas.width, canvas.height, texts[i], x, y)) {
+        dragRef.current = {
+          index: i,
+          offsetX: x - texts[i].x * canvas.width,
+          offsetY: y - texts[i].y * canvas.height,
+        };
+        break;
+      }
+    }
+  };
+
+  const onMouseMove = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const drag = dragRef.current;
+    if (!drag) return;
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const { x, y } = clientToCanvas(e.clientX, e.clientY);
+    const newX = Math.max(0, Math.min(1, (x - drag.offsetX) / canvas.width));
+    const newY = Math.max(0, Math.min(1, (y - drag.offsetY) / canvas.height));
+    const { config: currentConfig, updateConfig } = useEditorStore.getState();
+    const texts = currentConfig.customTexts.map((t, idx) =>
+      idx === drag.index ? { ...t, x: newX, y: newY } : t,
+    );
+    updateConfig({ customTexts: texts });
+  };
+
+  const onMouseUp = () => {
+    dragRef.current = null;
+  };
+
+  // Cursor feedback: pointer over text, grabbing while dragging
+  const onMouseMoveHover = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    if (dragRef.current) {
+      onMouseMove(e);
+      canvas.style.cursor = "grabbing";
+      return;
+    }
+    const ctx = canvas.getContext("2d");
+    if (!ctx) return;
+    const { x, y } = clientToCanvas(e.clientX, e.clientY);
+    const texts = configRef.current.customTexts;
+    let over = false;
+    for (let i = texts.length - 1; i >= 0; i--) {
+      if (hitTestCustomText(ctx, canvas.width, canvas.height, texts[i], x, y)) {
+        over = true;
+        break;
+      }
+    }
+    canvas.style.cursor = over ? "grab" : "default";
+  };
 
   return (
     <canvas
       ref={canvasRef}
       className="rounded-lg shadow-2xl shadow-primary/10"
+      onMouseDown={onMouseDown}
+      onMouseMove={onMouseMoveHover}
+      onMouseUp={onMouseUp}
+      onMouseLeave={onMouseUp}
     />
   );
 }
@@ -524,25 +731,189 @@ function drawParticlesOverlay(
   cx: number,
   cy: number,
   freq: number[],
-  config: { particleDensity: number; particleColor: string },
+  config: { particleStyle: string; particleDensity: number; particleColor: string },
   t: number
+) {
+  const style = config.particleStyle || "floating";
+  switch (style) {
+    case "snow": return drawSnowParticles(ctx, W, H, config, t);
+    case "fireflies": return drawFireflyParticles(ctx, W, H, cx, cy, freq, config, t);
+    case "rain": return drawRainParticles(ctx, W, H, config, t);
+    case "stars": return drawStarParticles(ctx, W, H, freq, config, t);
+    case "smoke": return drawSmokeParticles(ctx, W, H, cx, cy, freq, config, t);
+    default: return drawFloatingParticles(ctx, W, H, cx, cy, freq, config, t);
+  }
+}
+
+function drawFloatingParticles(
+  ctx: CanvasRenderingContext2D, W: number, H: number, cx: number, cy: number,
+  freq: number[], config: { particleDensity: number; particleColor: string }, t: number
 ) {
   const count = Math.floor(config.particleDensity * 0.4);
   const avg = freq.reduce((s, v) => s + v, 0) / freq.length;
-
+  const c = hexToRgb(config.particleColor);
   ctx.save();
   for (let i = 0; i < count; i++) {
     const seed = i * 137.508;
     const px = cx + Math.sin(seed + t * 0.3) * W * 0.45;
     const py = cy + Math.cos(seed * 0.7 + t * 0.2) * H * 0.45;
-    const alpha = (Math.sin(t + seed) * 0.5 + 0.5) * 0.2 * (0.5 + avg);
+    const alpha = (Math.sin(t + seed) * 0.5 + 0.5) * 0.25 * (0.5 + avg);
     const size = 1 + Math.sin(seed) * 0.5;
-    ctx.fillStyle = `rgba(255,255,255,${alpha})`;
+    ctx.fillStyle = `rgba(${c.r},${c.g},${c.b},${alpha})`;
     ctx.beginPath();
     ctx.arc(px, py, size, 0, Math.PI * 2);
     ctx.fill();
   }
   ctx.restore();
+}
+
+function drawSnowParticles(
+  ctx: CanvasRenderingContext2D, W: number, H: number,
+  config: { particleDensity: number; particleColor: string }, t: number
+) {
+  const count = Math.floor(config.particleDensity * 0.6);
+  const c = hexToRgb(config.particleColor);
+  ctx.save();
+  for (let i = 0; i < count; i++) {
+    const seed = i * 97.31;
+    const speed = 0.3 + (seed % 1) * 0.4;
+    const px = ((seed * 73.17) % W + Math.sin(t * 0.5 + seed) * 30) % W;
+    const py = ((t * speed * 40 + seed * 53.71) % (H + 20)) - 10;
+    const size = 1.5 + (seed % 3) * 0.5;
+    const alpha = 0.3 + Math.sin(seed + t * 0.3) * 0.15;
+    ctx.fillStyle = `rgba(${c.r},${c.g},${c.b},${alpha})`;
+    ctx.beginPath();
+    ctx.arc(px, py, size, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawFireflyParticles(
+  ctx: CanvasRenderingContext2D, W: number, H: number, cx: number, cy: number,
+  freq: number[], config: { particleDensity: number; particleColor: string }, t: number
+) {
+  const count = Math.floor(config.particleDensity * 0.3);
+  const avg = freq.reduce((s, v) => s + v, 0) / freq.length;
+  const c = hexToRgb(config.particleColor);
+  ctx.save();
+  for (let i = 0; i < count; i++) {
+    const seed = i * 211.13;
+    const orbit = 0.15 + (seed % 1) * 0.35;
+    const px = cx + Math.sin(seed * 0.3 + t * (0.2 + (seed % 0.3))) * W * orbit;
+    const py = cy + Math.cos(seed * 0.7 + t * (0.15 + (seed % 0.2))) * H * orbit;
+    // Slow pulsing glow
+    const pulse = Math.sin(t * 2 + seed) * 0.5 + 0.5;
+    const alpha = pulse * 0.5 * (0.5 + avg);
+    const size = 2 + pulse * 2;
+    // Glow effect
+    const grad = ctx.createRadialGradient(px, py, 0, px, py, size * 3);
+    grad.addColorStop(0, `rgba(${c.r},${c.g},${c.b},${alpha})`);
+    grad.addColorStop(1, `rgba(${c.r},${c.g},${c.b},0)`);
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(px, py, size * 3, 0, Math.PI * 2);
+    ctx.fill();
+    // Bright core
+    ctx.fillStyle = `rgba(${c.r},${c.g},${c.b},${alpha * 1.5})`;
+    ctx.beginPath();
+    ctx.arc(px, py, size * 0.4, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function drawRainParticles(
+  ctx: CanvasRenderingContext2D, W: number, H: number,
+  config: { particleDensity: number; particleColor: string }, t: number
+) {
+  const count = Math.floor(config.particleDensity * 0.8);
+  const c = hexToRgb(config.particleColor);
+  ctx.save();
+  ctx.lineWidth = 1;
+  for (let i = 0; i < count; i++) {
+    const seed = i * 61.73;
+    const speed = 1.5 + (seed % 1) * 2;
+    const px = (seed * 37.19) % W;
+    const py = ((t * speed * 120 + seed * 47.91) % (H + 40)) - 20;
+    const len = 8 + (seed % 10);
+    const alpha = 0.15 + (seed % 0.15);
+    ctx.strokeStyle = `rgba(${c.r},${c.g},${c.b},${alpha})`;
+    ctx.beginPath();
+    ctx.moveTo(px, py);
+    ctx.lineTo(px - 1, py + len);
+    ctx.stroke();
+  }
+  ctx.restore();
+}
+
+function drawStarParticles(
+  ctx: CanvasRenderingContext2D, W: number, H: number,
+  freq: number[], config: { particleDensity: number; particleColor: string }, t: number
+) {
+  const count = Math.floor(config.particleDensity * 0.5);
+  const avg = freq.reduce((s, v) => s + v, 0) / freq.length;
+  const c = hexToRgb(config.particleColor);
+  ctx.save();
+  for (let i = 0; i < count; i++) {
+    const seed = i * 173.29;
+    // Fixed positions that twinkle
+    const px = (seed * 83.41) % W;
+    const py = (seed * 47.63) % H;
+    const twinkle = Math.sin(t * (2 + seed % 3) + seed) * 0.5 + 0.5;
+    const alpha = twinkle * 0.4 * (0.6 + avg * 0.8);
+    const size = 0.8 + twinkle * 1.2;
+    ctx.fillStyle = `rgba(${c.r},${c.g},${c.b},${alpha})`;
+    ctx.beginPath();
+    ctx.arc(px, py, size, 0, Math.PI * 2);
+    ctx.fill();
+    // Cross flare on bright ones
+    if (twinkle > 0.7) {
+      ctx.strokeStyle = `rgba(${c.r},${c.g},${c.b},${alpha * 0.4})`;
+      ctx.lineWidth = 0.5;
+      const fl = size * 4;
+      ctx.beginPath();
+      ctx.moveTo(px - fl, py); ctx.lineTo(px + fl, py);
+      ctx.moveTo(px, py - fl); ctx.lineTo(px, py + fl);
+      ctx.stroke();
+    }
+  }
+  ctx.restore();
+}
+
+function drawSmokeParticles(
+  ctx: CanvasRenderingContext2D, W: number, H: number, cx: number, cy: number,
+  freq: number[], config: { particleDensity: number; particleColor: string }, t: number
+) {
+  const count = Math.floor(config.particleDensity * 0.2);
+  const avg = freq.reduce((s, v) => s + v, 0) / freq.length;
+  const c = hexToRgb(config.particleColor);
+  ctx.save();
+  for (let i = 0; i < count; i++) {
+    const seed = i * 251.07;
+    const life = ((t * 0.3 + seed * 0.01) % 1); // 0→1 cycle
+    const px = cx + Math.sin(seed) * W * 0.3 + Math.sin(t * 0.2 + seed) * 40;
+    const py = cy + (1 - life) * H * 0.5 - H * 0.1; // rise upward
+    const size = 15 + life * 30 + avg * 20;
+    const alpha = (1 - life) * 0.06 * (0.5 + avg);
+    const grad = ctx.createRadialGradient(px, py, 0, px, py, size);
+    grad.addColorStop(0, `rgba(${c.r},${c.g},${c.b},${alpha})`);
+    grad.addColorStop(1, `rgba(${c.r},${c.g},${c.b},0)`);
+    ctx.fillStyle = grad;
+    ctx.beginPath();
+    ctx.arc(px, py, size, 0, Math.PI * 2);
+    ctx.fill();
+  }
+  ctx.restore();
+}
+
+function hexToRgb(hex: string) {
+  const c = hex.replace("#", "");
+  return {
+    r: parseInt(c.substring(0, 2), 16) || 255,
+    g: parseInt(c.substring(2, 4), 16) || 255,
+    b: parseInt(c.substring(4, 6), 16) || 255,
+  };
 }
 
 // ─── Text overlay ───────────────────────────────────────────────────
@@ -551,8 +922,20 @@ function drawText(
   ctx: CanvasRenderingContext2D,
   W: number,
   H: number,
-  config: { artistName: string; trackName: string; textColor: string; fontSize: number; textPosition: string }
+  config: {
+    artistName: string;
+    trackName: string;
+    textColor: string;
+    fontSize: number;
+    textPosition: string;
+    linearCenterTextSource: "none" | "custom" | "artist" | "track";
+  }
 ) {
+  // Suppress either line if the linear visualizer is already promoting it
+  // into the center slot (avoids the two texts overlapping).
+  const skipArtist = config.linearCenterTextSource === "artist";
+  const skipTrack = config.linearCenterTextSource === "track";
+
   ctx.save();
   ctx.textAlign = "center";
   ctx.fillStyle = config.textColor;
@@ -570,16 +953,72 @@ function drawText(
   }
 
   // Artist name
-  ctx.font = `bold ${config.fontSize}px sans-serif`;
-  ctx.globalAlpha = 0.95;
-  ctx.fillText(config.artistName, W / 2, baseY);
+  if (!skipArtist) {
+    ctx.font = `bold ${config.fontSize}px sans-serif`;
+    ctx.globalAlpha = 0.95;
+    ctx.fillText(config.artistName, W / 2, baseY);
+  }
 
   // Track name
-  ctx.font = `${config.fontSize * 0.65}px sans-serif`;
-  ctx.globalAlpha = 0.6;
-  ctx.fillText(config.trackName, W / 2, baseY + config.fontSize * 0.85);
+  if (!skipTrack) {
+    ctx.font = `${config.fontSize * 0.65}px sans-serif`;
+    ctx.globalAlpha = 0.6;
+    const trackY = skipArtist ? baseY : baseY + config.fontSize * 0.85;
+    ctx.fillText(config.trackName, W / 2, trackY);
+  }
 
   ctx.restore();
+}
+
+// ─── Custom text overlays (draggable) ───────────────────────────────
+
+function customTextFont(size: number, weight: CustomText["weight"], W: number) {
+  const px = size * (W / 1920);
+  const w = weight === "black" ? 900 : weight === "bold" ? 700 : 400;
+  return `${w} ${px}px sans-serif`;
+}
+
+function drawCustomText(
+  ctx: CanvasRenderingContext2D,
+  W: number,
+  H: number,
+  txt: CustomText,
+) {
+  if (!txt.text.trim()) return;
+  ctx.save();
+  ctx.font = customTextFont(txt.size, txt.weight, W);
+  ctx.fillStyle = txt.color;
+  ctx.textAlign = txt.align;
+  ctx.textBaseline = "middle";
+  ctx.fillText(txt.text, txt.x * W, txt.y * H);
+  ctx.restore();
+}
+
+// Hit-test: is the given canvas-space point over the text's bounding box?
+function hitTestCustomText(
+  ctx: CanvasRenderingContext2D,
+  W: number,
+  H: number,
+  txt: CustomText,
+  px: number,
+  py: number,
+): boolean {
+  if (!txt.text.trim()) return false;
+  ctx.save();
+  ctx.font = customTextFont(txt.size, txt.weight, W);
+  const metrics = ctx.measureText(txt.text);
+  const textW = metrics.width;
+  const renderedPx = txt.size * (W / 1920);
+  const textH = renderedPx * 1.2;
+  ctx.restore();
+
+  const anchorX = txt.x * W;
+  const anchorY = txt.y * H;
+  let x0 = anchorX;
+  if (txt.align === "center") x0 = anchorX - textW / 2;
+  else if (txt.align === "right") x0 = anchorX - textW;
+  const y0 = anchorY - textH / 2;
+  return px >= x0 && px <= x0 + textW && py >= y0 && py <= y0 + textH;
 }
 
 // ─── Corner overlay ─────────────────────────────────────────────────
