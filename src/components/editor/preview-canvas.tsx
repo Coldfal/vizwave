@@ -380,10 +380,17 @@ export function PreviewCanvas() {
       if (hasBg) {
         ctx.save();
 
+        // Max translation magnitude this frame — used to pad the image so
+        // drift/rumble never reveals the canvas behind it.
+        let driftPadX = 0;
+        let driftPadY = 0;
+
         if (config.backgroundDrift) {
           const driftX = Math.sin(t * 0.15) * W * 0.03;
           const driftY = Math.cos(t * 0.11) * H * 0.02;
           ctx.translate(driftX, driftY);
+          driftPadX = Math.max(driftPadX, W * 0.03);
+          driftPadY = Math.max(driftPadY, H * 0.02);
         }
 
         if (config.backgroundRumble) {
@@ -393,6 +400,8 @@ export function PreviewCanvas() {
             (Math.random() - 0.5) * rumbleAmt,
             (Math.random() - 0.5) * rumbleAmt,
           );
+          driftPadX += rumbleAmt / 2;
+          driftPadY += rumbleAmt / 2;
         }
 
         const bgSource =
@@ -406,7 +415,7 @@ export function PreviewCanvas() {
           ctx.filter = `saturate(1.4) hue-rotate(${hue}deg)`;
         }
 
-        drawBackgroundSource(ctx, W, H, bgSource, config);
+        drawBackgroundSource(ctx, W, H, bgSource, config, driftPadX, driftPadY);
 
         if (config.backgroundFilter) {
           ctx.filter = "none";
@@ -592,11 +601,15 @@ function drawBackgroundSource(
   W: number,
   H: number,
   source: HTMLImageElement | HTMLVideoElement,
-  config: { backgroundBlur: number; backgroundDarken: number }
+  config: { backgroundBlur: number; backgroundDarken: number },
+  extraPadX: number = 0,
+  extraPadY: number = 0,
 ) {
   ctx.save();
 
-  // Cover-fit the source
+  // Cover-fit the source. We shrink the sampled source rect slightly so the
+  // visible portion zooms in — that way the image still cover-fits after we
+  // draw it oversized to cover drift / blur padding.
   const srcW = source instanceof HTMLVideoElement ? source.videoWidth : source.width;
   const srcH = source instanceof HTMLVideoElement ? source.videoHeight : source.height;
   if (srcW === 0 || srcH === 0) { ctx.restore(); return; }
@@ -620,9 +633,12 @@ function drawBackgroundSource(
     ctx.filter = `blur(${Math.round(blurPx)}px)`;
   }
 
-  // Draw oversized to hide blur edge artifacts
-  const pad = blurPx > 0 ? blurPx * 2.5 : 0;
-  ctx.drawImage(source, sx, sy, sw, sh, -pad, -pad, W + pad * 2, H + pad * 2);
+  // Draw oversized to hide blur-edge artifacts AND drift translation.
+  // padX/padY must cover: blur feathering + drift displacement.
+  const blurPad = blurPx > 0 ? blurPx * 2.5 : 0;
+  const padX = Math.max(blurPad, extraPadX);
+  const padY = Math.max(blurPad, extraPadY);
+  ctx.drawImage(source, sx, sy, sw, sh, -padX, -padY, W + padX * 2, H + padY * 2);
   ctx.filter = "none";
 
   // Darken overlay
