@@ -1,10 +1,17 @@
 "use client";
 
-import { useRef, useEffect } from "react";
+import { useRef, useEffect, useCallback } from "react";
 import { useEditorStore } from "@/stores/editor-store";
 import { renderPreset, generateProceduralFreq } from "./preset-renderers";
 import type { RendererConfig } from "./preset-renderers";
 import type { ProjectConfig, CustomText } from "@/lib/types";
+import {
+  registerStartExport,
+  pickMimeType,
+  type StartExport,
+  type StartExportOpts,
+  type ExportResult,
+} from "@/lib/exporter";
 
 // ─── Beat detection state ────────────────────────────────────────────
 
@@ -213,39 +220,51 @@ export function PreviewCanvas() {
     };
   }, [audioUrl]);
 
+  // Lazily create the audio pipeline (one AudioContext, source node, and
+  // analysers). Called from play/pause and also from the exporter — both
+  // are triggered by a user gesture, which satisfies AudioContext rules.
+  const ensureAudioPipeline = useCallback(() => {
+    const audio = audioRef.current;
+    if (!audio) return null;
+    if (audioContextRef.current && sourceRef.current) {
+      return audioContextRef.current;
+    }
+    const ctx = new AudioContext();
+    const currentPreset = presetIdRef.current;
+    const currentConfig = configRef.current;
+
+    const analyser = ctx.createAnalyser();
+    analyser.fftSize = currentPreset === "trap-nation" ? 16384 : 2048;
+    analyser.smoothingTimeConstant = currentPreset === "trap-nation" ? 0.1 : currentConfig.waveformSmoothing;
+    if (currentPreset === "trap-nation") {
+      analyser.minDecibels = -40;
+      analyser.maxDecibels = -30;
+    }
+
+    const beatAnalyser = ctx.createAnalyser();
+    beatAnalyser.fftSize = 2048;
+    beatAnalyser.smoothingTimeConstant = 0.5;
+
+    const source = ctx.createMediaElementSource(audio);
+    source.connect(analyser);
+    source.connect(beatAnalyser);
+    analyser.connect(ctx.destination);
+
+    audioContextRef.current = ctx;
+    analyserRef.current = analyser;
+    beatAnalyserRef.current = beatAnalyser;
+    sourceRef.current = source;
+    return ctx;
+  }, []);
+
   // Play/pause
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
     if (isPlaying) {
-      if (!audioContextRef.current) {
-        const ctx = new AudioContext();
-
-        // Main analyser for visualizer rendering
-        const analyser = ctx.createAnalyser();
-        analyser.fftSize = presetId === "trap-nation" ? 16384 : 2048;
-        analyser.smoothingTimeConstant = presetId === "trap-nation" ? 0.1 : config.waveformSmoothing;
-        if (presetId === "trap-nation") {
-          analyser.minDecibels = -40;
-          analyser.maxDecibels = -30;
-        }
-
-        // Separate analyser for beat detection (standard dB range)
-        const beatAnalyser = ctx.createAnalyser();
-        beatAnalyser.fftSize = 2048;
-        beatAnalyser.smoothingTimeConstant = 0.5;
-
-        const source = ctx.createMediaElementSource(audio);
-        source.connect(analyser);
-        source.connect(beatAnalyser);
-        analyser.connect(ctx.destination);
-
-        audioContextRef.current = ctx;
-        analyserRef.current = analyser;
-        beatAnalyserRef.current = beatAnalyser;
-        sourceRef.current = source;
-      } else if (analyserRef.current) {
-        // Update analyser settings on preset change
+      const ctx = ensureAudioPipeline();
+      if (analyserRef.current) {
+        // Keep analyser settings in sync with current preset/config.
         const a = analyserRef.current;
         if (presetId === "trap-nation") {
           a.fftSize = 16384;
@@ -259,12 +278,128 @@ export function PreviewCanvas() {
           a.maxDecibels = -30;
         }
       }
-      audioContextRef.current.resume();
+      ctx?.resume();
       audio.play().catch(() => {});
     } else {
       audio.pause();
     }
-  }, [isPlaying, config.waveformSmoothing, presetId]);
+  }, [isPlaying, config.waveformSmoothing, presetId, ensureAudioPipeline]);
+
+  // Register the client-side video exporter. Runs once on mount.
+  useEffect(() => {
+    const startFn: StartExport = async (opts: StartExportOpts): Promise<ExportResult> => {
+      const canvas = canvasRef.current;
+      const audio = audioRef.current;
+      if (!canvas) throw new Error("Canvas not mounted");
+      if (!audio) throw new Error("No audio loaded — upload an audio file first");
+      if (typeof MediaRecorder === "undefined") {
+        throw new Error("MediaRecorder is not available in this browser");
+      }
+
+      const ctx = ensureAudioPipeline();
+      const source = sourceRef.current;
+      if (!ctx || !source) throw new Error("Failed to set up audio pipeline");
+
+      opts.onProgress?.({ stage: "preparing", elapsed: 0, total: audio.duration || 0 });
+
+      // Tee the audio to a MediaStreamDestination without disturbing the
+      // existing analyser/speaker branch.
+      const streamDest = ctx.createMediaStreamDestination();
+      source.connect(streamDest);
+
+      const videoStream = canvas.captureStream(opts.fps ?? 30);
+      const combined = new MediaStream([
+        ...videoStream.getVideoTracks(),
+        ...streamDest.stream.getAudioTracks(),
+      ]);
+
+      const mimeType = pickMimeType();
+      const recorder = new MediaRecorder(combined, {
+        mimeType,
+        videoBitsPerSecond: opts.videoBitsPerSecond ?? 8_000_000,
+      });
+
+      const chunks: Blob[] = [];
+      recorder.ondataavailable = (e) => {
+        if (e.data.size > 0) chunks.push(e.data);
+      };
+
+      const cleanup = () => {
+        try { source.disconnect(streamDest); } catch { /* already disconnected */ }
+        videoStream.getTracks().forEach((t) => t.stop());
+        streamDest.stream.getTracks().forEach((t) => t.stop());
+      };
+
+      const startTs = performance.now();
+      let progressTimer: ReturnType<typeof setInterval> | null = null;
+      let aborted = false;
+
+      const stopPromise = new Promise<void>((resolve) => {
+        recorder.onstop = () => resolve();
+      });
+
+      // Seek to 0, set playback state so the draw loop reads live analyser data.
+      audio.pause();
+      audio.currentTime = 0;
+      await ctx.resume();
+      useEditorStore.setState({ isPlaying: true });
+      try {
+        await audio.play();
+      } catch (err) {
+        cleanup();
+        useEditorStore.setState({ isPlaying: false });
+        throw err;
+      }
+
+      recorder.start(500);
+      opts.onProgress?.({ stage: "recording", elapsed: 0, total: audio.duration || 0 });
+
+      progressTimer = setInterval(() => {
+        opts.onProgress?.({
+          stage: "recording",
+          elapsed: audio.currentTime,
+          total: audio.duration || audio.currentTime,
+        });
+      }, 250);
+
+      const onAbort = () => {
+        aborted = true;
+        if (recorder.state === "recording") recorder.stop();
+      };
+      opts.signal?.addEventListener("abort", onAbort);
+
+      // Wait for audio to finish
+      await new Promise<void>((resolve) => {
+        const onEnded = () => { audio.removeEventListener("ended", onEnded); resolve(); };
+        audio.addEventListener("ended", onEnded);
+        // If aborted, resolve immediately
+        opts.signal?.addEventListener("abort", () => {
+          audio.removeEventListener("ended", onEnded);
+          resolve();
+        });
+      });
+
+      if (progressTimer) clearInterval(progressTimer);
+      opts.onProgress?.({ stage: "finalizing", elapsed: audio.currentTime, total: audio.duration || 0 });
+
+      if (recorder.state === "recording") recorder.stop();
+      await stopPromise;
+
+      useEditorStore.setState({ isPlaying: false, currentTime: 0 });
+      cleanup();
+
+      if (aborted) throw new Error("Export cancelled");
+
+      return {
+        blob: new Blob(chunks, { type: mimeType }),
+        mimeType,
+        durationMs: performance.now() - startTs,
+      };
+    };
+
+    registerStartExport(startFn);
+    return () => registerStartExport(null);
+  }, [ensureAudioPipeline]);
 
   // Seek handling
   const seekTo = useEditorStore((s) => s.seekTo);
