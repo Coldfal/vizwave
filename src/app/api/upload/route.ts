@@ -28,7 +28,7 @@ export async function POST(req: NextRequest) {
   }
 
   // Size limits
-  const maxSize = type === "audio" ? 50 * 1024 * 1024
+  const maxSize = type === "audio" ? 300 * 1024 * 1024
     : allowedVideo.includes(file.type) ? 100 * 1024 * 1024
     : 10 * 1024 * 1024;
 

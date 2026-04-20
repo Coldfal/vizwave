@@ -18,7 +18,7 @@ export const SUPPORTED_IMAGE_FORMATS = [
   "image/gif",
 ];
 
-export const MAX_AUDIO_SIZE = 50 * 1024 * 1024; // 50MB
+export const MAX_AUDIO_SIZE = 300 * 1024 * 1024; // 300MB — enough for a 1hr track at any reasonable bitrate
 export const MAX_IMAGE_SIZE = 10 * 1024 * 1024;  // 10MB
 
 export const EXPORT_RESOLUTIONS = {

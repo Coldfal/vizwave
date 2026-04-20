@@ -24,7 +24,7 @@ export function AudioPanel() {
     }
 
     if (file.size > MAX_AUDIO_SIZE) {
-      toast.error("Audio file too large. Maximum 50MB.");
+      toast.error("Audio file too large. Maximum 300MB.");
       return;
     }
 
@@ -103,7 +103,7 @@ export function AudioPanel() {
           <div className="text-center">
             <p className="text-sm font-medium">Upload audio file</p>
             <p className="text-xs text-muted-foreground">
-              MP3, WAV, FLAC, OGG — up to 50MB
+              MP3, WAV, FLAC, OGG — up to 300MB (≈1 hr at 320 kbps)
             </p>
           </div>
         </button>
