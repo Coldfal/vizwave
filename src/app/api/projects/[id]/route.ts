@@ -44,7 +44,7 @@ export async function PATCH(
 
   // Only allow updating specific fields
   const allowedFields = [
-    "name", "presetId", "audioUrl", "audioDuration", "audioWaveform",
+    "name", "presetId", "audioUrl", "audioDuration", "audioTracks", "audioWaveform",
     "logoUrl", "backgroundUrl", "overlayUrl", "config", "resolution",
   ];
 

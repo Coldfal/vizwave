@@ -146,6 +146,14 @@ export const DEFAULT_PROJECT_CONFIG: ProjectConfig = {
   beatZoomIntensity: 0.5,
 };
 
+// A single audio track in the project's playlist. Projects can have 1+ of
+// these; they play back sequentially in order.
+export interface AudioTrack {
+  url: string;      // persisted URL (e.g. /uploads/foo.mp3)
+  name: string;     // original filename for display
+  duration: number; // seconds
+}
+
 export interface AudioWaveformData {
   sampleRate: number;
   duration: number;

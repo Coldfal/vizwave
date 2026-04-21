@@ -39,6 +39,7 @@ export function EditorShell() {
         overlayUrl: project.overlayUrl,
         audioUrl: project.audioUrl,
         audioDuration: project.audioDuration,
+        audioTracks: project.audioTracks,
       };
       await fetch(`/api/projects/${project.id}`, {
         method: "PATCH",

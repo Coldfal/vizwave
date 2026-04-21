@@ -62,7 +62,10 @@ async function decodeToPCM(inputPath: string, sampleRate: number): Promise<Float
  * to the 0-255 dB scale used by AnalyserNode.getByteFrequencyData).
  */
 export async function computeSpectrum(opts: {
-  inputPath: string;
+  /** Single file path (legacy) — ignored if inputPaths is provided. */
+  inputPath?: string;
+  /** One or more file paths, decoded and concatenated in order. */
+  inputPaths?: string[];
   fps: number;
   /** fftSize must be a power of 2. 2048 matches the preview's default. */
   fftSize?: number;
@@ -79,7 +82,24 @@ export async function computeSpectrum(opts: {
   const maxDb = opts.maxDecibels ?? -30;
   const smoothing = opts.smoothing ?? 0.7;
 
-  const pcm = await decodeToPCM(opts.inputPath, sampleRate);
+  const paths = opts.inputPaths && opts.inputPaths.length > 0
+    ? opts.inputPaths
+    : opts.inputPath
+    ? [opts.inputPath]
+    : [];
+  if (paths.length === 0) {
+    throw new Error("computeSpectrum: no input paths");
+  }
+
+  // Decode each track to mono float32 PCM and concatenate them in order.
+  const perTrack = await Promise.all(paths.map((p) => decodeToPCM(p, sampleRate)));
+  const totalLen = perTrack.reduce((s, a) => s + a.length, 0);
+  const pcm = new Float32Array(totalLen);
+  let offset = 0;
+  for (const part of perTrack) {
+    pcm.set(part, offset);
+    offset += part.length;
+  }
   const duration = pcm.length / sampleRate;
   const totalFrames = Math.ceil(duration * fps);
 

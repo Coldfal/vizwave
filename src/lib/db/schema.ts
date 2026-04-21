@@ -65,8 +65,9 @@ export const projects = sqliteTable("projects", {
   userId: text("user_id").notNull().references(() => users.id, { onDelete: "cascade" }),
   name: text("name").notNull(),
   presetId: text("preset_id"), // slug-based, no FK — presets are code-defined for now
-  audioUrl: text("audio_url"),
-  audioDuration: real("audio_duration"),
+  audioUrl: text("audio_url"), // first track url — kept for legacy reads
+  audioDuration: real("audio_duration"), // combined duration across all tracks
+  audioTracks: text("audio_tracks"), // JSON: AudioTrack[] (url, name, duration) in play order
   audioWaveform: text("audio_waveform"), // JSON: pre-computed amplitude/frequency/beat data
   logoUrl: text("logo_url"),
   backgroundUrl: text("background_url"), // image or video URL

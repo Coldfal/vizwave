@@ -10,7 +10,7 @@ import { and, eq } from "drizzle-orm";
 import { computeSpectrum } from "@/lib/render/audio-spectrum";
 import { isRemovedPreset } from "@/lib/presets/removed";
 import { renderFrame, createBeatState } from "@/components/editor/frame-renderer";
-import { DEFAULT_PROJECT_CONFIG, type ProjectConfig } from "@/lib/types";
+import { DEFAULT_PROJECT_CONFIG, type ProjectConfig, type AudioTrack } from "@/lib/types";
 
 const FFMPEG = ffmpegInstaller.path;
 
@@ -147,12 +147,6 @@ export async function POST(req: Request) {
       headers: { "Content-Type": "application/json" },
     });
   }
-  if (!project.audioUrl) {
-    return new Response(JSON.stringify({ error: "Project has no audio" }), {
-      status: 400,
-      headers: { "Content-Type": "application/json" },
-    });
-  }
   if (isRemovedPreset(project.presetId)) {
     return new Response(
       JSON.stringify({ error: "Preset no longer available — open the project and pick a replacement." }),
@@ -160,14 +154,41 @@ export async function POST(req: Request) {
     );
   }
 
-  const audioLocalPath = resolveLocalPath(project.audioUrl);
-  try {
-    await stat(audioLocalPath);
-  } catch {
-    return new Response(
-      JSON.stringify({ error: `Audio file not found on disk: ${audioLocalPath}` }),
-      { status: 400, headers: { "Content-Type": "application/json" } },
-    );
+  // Resolve the project's audio tracks. Prefer the new audioTracks column;
+  // fall back to the legacy single-track audioUrl for older projects.
+  let tracks: AudioTrack[] = [];
+  if (project.audioTracks) {
+    try {
+      const arr = JSON.parse(project.audioTracks) as AudioTrack[];
+      if (Array.isArray(arr)) tracks = arr.filter((t) => t && typeof t.url === "string");
+    } catch { /* fall through */ }
+  }
+  if (tracks.length === 0 && project.audioUrl) {
+    tracks = [{
+      url: project.audioUrl,
+      name: project.audioUrl.split("/").pop() || "track",
+      duration: project.audioDuration ?? 0,
+    }];
+  }
+  if (tracks.length === 0) {
+    return new Response(JSON.stringify({ error: "Project has no audio" }), {
+      status: 400,
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  const audioLocalPaths: string[] = [];
+  for (const t of tracks) {
+    const p = resolveLocalPath(t.url);
+    try {
+      await stat(p);
+    } catch {
+      return new Response(
+        JSON.stringify({ error: `Audio file not found on disk: ${p}` }),
+        { status: 400, headers: { "Content-Type": "application/json" } },
+      );
+    }
+    audioLocalPaths.push(p);
   }
 
   const rendersDir = path.join(process.cwd(), "public", "renders");
@@ -186,9 +207,9 @@ export async function POST(req: Request) {
       const startTs = Date.now();
 
       try {
-        send({ stage: "analysing_audio" });
+        send({ stage: "analysing_audio", trackCount: audioLocalPaths.length });
         const spectrum = await computeSpectrum({
-          inputPath: audioLocalPath,
+          inputPaths: audioLocalPaths,
           fps,
           fftSize: 2048,
           sampleRate: 44100,
@@ -223,7 +244,28 @@ export async function POST(req: Request) {
 
         // ─── Spawn ffmpeg ────────────────────────────────────
         const encoder = pickEncoder(crf);
-        console.log(`[render] using encoder ${encoder.name}, ${spectrum.frames.length} frames`);
+        console.log(
+          `[render] using encoder ${encoder.name}, ${spectrum.frames.length} frames, ${audioLocalPaths.length} audio track(s)`,
+        );
+
+        // If there are multiple audio tracks, use ffmpeg's concat filter
+        // to stitch them into a single audio stream in-pipeline. Video
+        // comes from our MJPEG stdin (input 0), audio tracks are
+        // inputs 1..N and merged via concat filter.
+        const audioInputArgs: string[] = [];
+        for (const p of audioLocalPaths) {
+          audioInputArgs.push("-i", p);
+        }
+
+        const audioMapArgs: string[] = [];
+        if (audioLocalPaths.length === 1) {
+          audioMapArgs.push("-map", "0:v", "-map", "1:a");
+        } else {
+          // Build concat filter: [1:a][2:a][3:a]concat=n=3:v=0:a=1[aout]
+          const inputs = audioLocalPaths.map((_, i) => `[${i + 1}:a]`).join("");
+          const filter = `${inputs}concat=n=${audioLocalPaths.length}:v=0:a=1[aout]`;
+          audioMapArgs.push("-filter_complex", filter, "-map", "0:v", "-map", "[aout]");
+        }
 
         const ffmpegProc = spawn(FFMPEG, [
           "-y",
@@ -234,7 +276,8 @@ export async function POST(req: Request) {
           "-framerate", String(fps),
           "-thread_queue_size", "512",
           "-i", "-",
-          "-i", audioLocalPath,
+          ...audioInputArgs,
+          ...audioMapArgs,
           ...encoder.args,
           "-pix_fmt", "yuv420p",
           "-c:a", "aac",

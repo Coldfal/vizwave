@@ -41,6 +41,8 @@ export function PreviewCanvas() {
 
   const config = useEditorStore((s) => s.config);
   const audioUrl = useEditorStore((s) => s.audioUrl);
+  const audioTracks = useEditorStore((s) => s.audioTracks);
+  const currentTrackIndex = useEditorStore((s) => s.currentTrackIndex);
   const isPlaying = useEditorStore((s) => s.isPlaying);
   const project = useEditorStore((s) => s.project);
   const presetId = project?.presetId;
@@ -145,58 +147,104 @@ export function PreviewCanvas() {
   }, [project?.overlayUrl]);
 
   // ── Audio element ────────────────────────────────────────────────
+  // Whenever the current track's URL changes we spin up a fresh <audio>
+  // element. Web Audio's MediaElementSource is one-shot per element, so
+  // the old source must also be torn down and a new one wired into the
+  // existing analysers.
   useEffect(() => {
-    if (!audioUrl) return;
+    if (!audioUrl) {
+      if (audioRef.current) {
+        audioRef.current.pause();
+        audioRef.current.src = "";
+        audioRef.current = null;
+      }
+      if (sourceRef.current) {
+        try { sourceRef.current.disconnect(); } catch { /* noop */ }
+        sourceRef.current = null;
+      }
+      return;
+    }
+
     const audio = new Audio(audioUrl);
     audio.crossOrigin = "anonymous";
     audioRef.current = audio;
     audio.addEventListener("loadedmetadata", () => {
       if (audio.duration && isFinite(audio.duration)) {
-        useEditorStore.setState({ audioDuration: audio.duration });
+        useEditorStore.getState().setAudioDuration(audio.duration);
       }
     });
+
+    // Re-wire source → analysers on the shared context, if it's already up.
+    const ctx = audioContextRef.current;
+    const analyser = analyserRef.current;
+    const beatAnalyser = beatAnalyserRef.current;
+    if (ctx && analyser && beatAnalyser) {
+      if (sourceRef.current) {
+        try { sourceRef.current.disconnect(); } catch { /* noop */ }
+      }
+      const source = ctx.createMediaElementSource(audio);
+      source.connect(analyser);
+      source.connect(beatAnalyser);
+      sourceRef.current = source;
+    }
+
     return () => {
       audio.pause();
       audio.src = "";
     };
   }, [audioUrl]);
 
-  // ── Audio pipeline (shared by play/pause and export) ─────────────
+  // ── Audio pipeline (context + analysers) ─────────────────────────
+  // First call: create AudioContext, analyser nodes, and source. Later
+  // calls reuse them. Source creation for a fresh <audio> element is
+  // handled in the audioUrl effect above.
   const ensureAudioPipeline = useCallback(() => {
     const audio = audioRef.current;
     if (!audio) return null;
     if (audioContextRef.current && sourceRef.current) {
       return audioContextRef.current;
     }
-    const ctx = new AudioContext();
+
+    const ctx = audioContextRef.current ?? new AudioContext();
     const currentPreset = presetIdRef.current;
     const currentConfig = configRef.current;
 
-    const analyser = ctx.createAnalyser();
-    analyser.fftSize = currentPreset === "trap-nation" ? 16384 : 2048;
-    analyser.smoothingTimeConstant = currentPreset === "trap-nation" ? 0.1 : currentConfig.waveformSmoothing;
-    if (currentPreset === "trap-nation") {
-      analyser.minDecibels = -40;
-      analyser.maxDecibels = -30;
+    let analyser = analyserRef.current;
+    if (!analyser) {
+      analyser = ctx.createAnalyser();
+      analyser.fftSize = currentPreset === "trap-nation" ? 16384 : 2048;
+      analyser.smoothingTimeConstant = currentPreset === "trap-nation" ? 0.1 : currentConfig.waveformSmoothing;
+      if (currentPreset === "trap-nation") {
+        analyser.minDecibels = -40;
+        analyser.maxDecibels = -30;
+      }
+      analyser.connect(ctx.destination);
+      analyserRef.current = analyser;
     }
 
-    const beatAnalyser = ctx.createAnalyser();
-    beatAnalyser.fftSize = 2048;
-    beatAnalyser.smoothingTimeConstant = 0.5;
+    let beatAnalyser = beatAnalyserRef.current;
+    if (!beatAnalyser) {
+      beatAnalyser = ctx.createAnalyser();
+      beatAnalyser.fftSize = 2048;
+      beatAnalyser.smoothingTimeConstant = 0.5;
+      beatAnalyserRef.current = beatAnalyser;
+    }
 
-    const source = ctx.createMediaElementSource(audio);
-    source.connect(analyser);
-    source.connect(beatAnalyser);
-    analyser.connect(ctx.destination);
+    if (!sourceRef.current) {
+      const source = ctx.createMediaElementSource(audio);
+      source.connect(analyser);
+      source.connect(beatAnalyser);
+      sourceRef.current = source;
+    }
 
     audioContextRef.current = ctx;
-    analyserRef.current = analyser;
-    beatAnalyserRef.current = beatAnalyser;
-    sourceRef.current = source;
     return ctx;
   }, []);
 
   // ── Play/pause ───────────────────────────────────────────────────
+  // audioUrl is in the deps so that when the playlist advances to the
+  // next track (new <audio> element, same `isPlaying`=true), we
+  // re-invoke play() on the fresh element.
   useEffect(() => {
     const audio = audioRef.current;
     if (!audio) return;
@@ -221,7 +269,7 @@ export function PreviewCanvas() {
     } else {
       audio.pause();
     }
-  }, [isPlaying, config.waveformSmoothing, presetId, ensureAudioPipeline]);
+  }, [isPlaying, audioUrl, config.waveformSmoothing, presetId, ensureAudioPipeline]);
 
   // ── Register client-side exporter ────────────────────────────────
   useEffect(() => {
@@ -348,7 +396,26 @@ export function PreviewCanvas() {
       useEditorStore.setState({ currentTime: audio.currentTime });
     };
     const onEnded = () => {
-      useEditorStore.setState({ isPlaying: false, currentTime: 0 });
+      const state = useEditorStore.getState();
+      const nextIdx = state.currentTrackIndex + 1;
+      if (nextIdx < state.audioTracks.length) {
+        // Advance to next track; keep `isPlaying` true so the
+        // play/pause effect auto-starts it after the audio element
+        // is re-created.
+        useEditorStore.setState({
+          currentTrackIndex: nextIdx,
+          audioUrl: state.audioTracks[nextIdx].url,
+          currentTime: 0,
+        });
+      } else {
+        // End of playlist — rewind to the first track, stop.
+        useEditorStore.setState({
+          currentTrackIndex: 0,
+          audioUrl: state.audioTracks[0]?.url ?? null,
+          currentTime: 0,
+          isPlaying: false,
+        });
+      }
     };
     audio.addEventListener("timeupdate", onTimeUpdate);
     audio.addEventListener("ended", onEnded);
