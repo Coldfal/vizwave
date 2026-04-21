@@ -6,21 +6,25 @@ import { Button } from "@/components/ui/button";
 import { EditorSidebar } from "./editor-sidebar";
 import { PreviewCanvas } from "./preview-canvas";
 import { PlaybackControls } from "./playback-controls";
-import { Music, ArrowLeft, Save, Loader2, Pencil } from "lucide-react";
+import { Music, ArrowLeft, Save, Loader2, Pencil, AlertTriangle } from "lucide-react";
 import { buttonVariants } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 import Link from "next/link";
+import { isRemovedPreset } from "@/lib/presets/removed";
 
 export function EditorShell() {
   const project = useEditorStore((s) => s.project);
   const config = useEditorStore((s) => s.config);
   const isDirty = useEditorStore((s) => s.isDirty);
   const resetDirty = useEditorStore((s) => s.resetDirty);
+  const setActivePanel = useEditorStore((s) => s.setActivePanel);
   const saveTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const savingRef = useRef(false);
   const [editingName, setEditingName] = useState(false);
   const [nameValue, setNameValue] = useState("");
   const nameInputRef = useRef<HTMLInputElement>(null);
+
+  const presetBlocked = isRemovedPreset(project?.presetId);
 
   // Auto-save on config change (debounced) — saves all project state
   const save = useCallback(async () => {
@@ -137,8 +141,26 @@ export function EditorShell() {
 
         {/* Preview area */}
         <div className="flex flex-1 flex-col">
-          <div className="flex flex-1 items-center justify-center bg-black/20 p-4">
+          <div className="relative flex flex-1 items-center justify-center bg-black/20 p-4">
             <PreviewCanvas />
+            {presetBlocked && (
+              <div className="absolute inset-0 z-20 flex items-center justify-center bg-background/85 p-6 backdrop-blur-sm">
+                <div className="max-w-md rounded-lg border border-yellow-500/40 bg-card p-6 shadow-xl">
+                  <div className="mb-3 flex items-center gap-2 text-yellow-400">
+                    <AlertTriangle className="h-5 w-5" />
+                    <h2 className="text-base font-semibold">Preset no longer available</h2>
+                  </div>
+                  <p className="mb-4 text-sm text-muted-foreground">
+                    This project uses a GPU shader preset that has been removed.
+                    Pick a replacement from the Preset panel to continue editing
+                    and exporting.
+                  </p>
+                  <Button onClick={() => setActivePanel("preset")}>
+                    Open Preset Panel
+                  </Button>
+                </div>
+              </div>
+            )}
           </div>
           <PlaybackControls />
         </div>

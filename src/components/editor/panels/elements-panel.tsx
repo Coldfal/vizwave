@@ -135,18 +135,32 @@ export function ElementsPanel() {
             </div>
           )}
           {config.linearCenterTextSource !== "none" && (
-            <div className="space-y-2">
-              <Label className="text-xs">
-                Center Text Size: {config.linearCenterTextSize}
-              </Label>
-              <Slider
-                value={[config.linearCenterTextSize]}
-                onValueChange={(v) => updateConfig({ linearCenterTextSize: Array.isArray(v) ? v[0] : v })}
-                min={40}
-                max={320}
-                step={4}
-              />
-            </div>
+            <>
+              <div className="space-y-2">
+                <Label className="text-xs">
+                  Center Text Size: {config.linearCenterTextSize}
+                </Label>
+                <Slider
+                  value={[config.linearCenterTextSize]}
+                  onValueChange={(v) => updateConfig({ linearCenterTextSize: Array.isArray(v) ? v[0] : v })}
+                  min={40}
+                  max={320}
+                  step={4}
+                />
+              </div>
+              <div className="space-y-2">
+                <Label className="text-xs">
+                  Center Text Vertical: {Math.round((config.linearCenterTextOffsetY ?? 0) * 100)}%
+                </Label>
+                <Slider
+                  value={[(config.linearCenterTextOffsetY ?? 0) * 100]}
+                  onValueChange={(v) => updateConfig({ linearCenterTextOffsetY: (Array.isArray(v) ? v[0] : v) / 100 })}
+                  min={-50}
+                  max={50}
+                  step={1}
+                />
+              </div>
+            </>
           )}
         </div>
       )}

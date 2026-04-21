@@ -14,6 +14,7 @@ import {
 import { Download, Square, Server, MonitorPlay } from "lucide-react";
 import { toast } from "sonner";
 import { startExport, downloadBlob, type ExportProgress } from "@/lib/exporter";
+import { isRemovedPreset } from "@/lib/presets/removed";
 
 type Fps = 30 | 60;
 type Mode = "client" | "server";
@@ -33,6 +34,7 @@ export function ExportPanel() {
   const project = useEditorStore((s) => s.project);
   const audioUrl = useEditorStore((s) => s.audioUrl);
   const isDirty = useEditorStore((s) => s.isDirty);
+  const presetBlocked = isRemovedPreset(project?.presetId);
   const [exporting, setExporting] = useState(false);
   const [mode, setMode] = useState<Mode>("server");
   const [fps, setFps] = useState<Fps>(30);
@@ -87,12 +89,14 @@ export function ExportPanel() {
         frameCount: number;
         elapsedMs: number;
         durationSec: number;
+        encoder?: string;
       };
       const realtime = data.durationSec;
       const actual = data.elapsedMs / 1000;
       const ratio = realtime > 0 ? (realtime / actual).toFixed(2) : "?";
+      const enc = data.encoder ? ` via ${data.encoder}` : "";
       toast.success(
-        `Render done in ${formatSecs(actual)} (${ratio}x realtime).`,
+        `Render done in ${formatSecs(actual)} (${ratio}x realtime${enc}).`,
       );
       // Trigger download of the MP4
       const a = document.createElement("a");
@@ -224,7 +228,11 @@ export function ExportPanel() {
       )}
 
       {!exporting ? (
-        <Button className="w-full" onClick={handleExport} disabled={!audioUrl}>
+        <Button
+          className="w-full"
+          onClick={handleExport}
+          disabled={!audioUrl || presetBlocked}
+        >
           <Download className="mr-2 h-4 w-4" />
           Export Video
         </Button>
@@ -235,7 +243,14 @@ export function ExportPanel() {
         </Button>
       )}
 
-      {!audioUrl && (
+      {presetBlocked && (
+        <p className="text-[11px] text-yellow-400">
+          This project uses a removed preset. Pick a replacement in the Preset
+          panel before exporting.
+        </p>
+      )}
+
+      {!audioUrl && !presetBlocked && (
         <p className="text-[11px] text-muted-foreground">
           Upload an audio file first to enable export.
         </p>

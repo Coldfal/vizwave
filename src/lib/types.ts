@@ -25,6 +25,7 @@ export interface ProjectConfig {
   linearCenterTextSource: "none" | "custom" | "artist" | "track";
   linearCenterText: string; // used when source = "custom"
   linearCenterTextSize: number; // px at 1920 width
+  linearCenterTextOffsetY: number; // -0.5 .. 0.5, fraction of maxBarH, negative = up
 
   // Custom draggable text overlays
   customTexts: CustomText[];
@@ -96,6 +97,7 @@ export const DEFAULT_PROJECT_CONFIG: ProjectConfig = {
   linearCenterTextSource: "none",
   linearCenterText: "",
   linearCenterTextSize: 140,
+  linearCenterTextOffsetY: 0,
 
   customTexts: [],
 

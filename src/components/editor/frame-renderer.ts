@@ -153,6 +153,7 @@ export function renderFrame(args: FrameArgs): void {
         ? config.linearCenterText
         : "",
     linearCenterTextSize: config.linearCenterTextSize,
+    linearCenterTextOffsetY: config.linearCenterTextOffsetY,
   };
 
   renderPreset(presetId, { ctx, W, H, cx, cy, freq, config: rendererConfig, t });

@@ -15,12 +15,6 @@ const PRESETS = [
   { slug: "magma-flow", name: "Magma Flow", description: "Fluid lava lamp effect", category: "retro" as const, tier: "pro" as const, componentName: "MagmaFlow", sortOrder: 11 },
   { slug: "neon-tunnel", name: "Neon Tunnel", description: "3D wireframe tunnel with depth", category: "3d" as const, tier: "pro" as const, componentName: "NeonTunnel", sortOrder: 12 },
   { slug: "trap-nation", name: "Trap Nation", description: "Layered rainbow spectrum curves with frame-delay trails", category: "waveform" as const, tier: "free" as const, componentName: "TrapNation", sortOrder: 13 },
-  { slug: "neon-pulse", name: "Neon Pulse", description: "GPU-powered neon pulse rings with glow", category: "shader" as const, tier: "free" as const, componentName: "NeonPulse", sortOrder: 14 },
-  { slug: "aurora-streams", name: "Aurora Streams", description: "Flowing aurora borealis ribbons", category: "shader" as const, tier: "pro" as const, componentName: "AuroraStreams", sortOrder: 15 },
-  { slug: "sonic-spiral", name: "Sonic Spiral", description: "Galaxy-like logarithmic spiral arms", category: "shader" as const, tier: "pro" as const, componentName: "SonicSpiral", sortOrder: 16 },
-  { slug: "mandala-bloom", name: "Mandala Bloom", description: "8-fold kaleidoscopic mandala pattern", category: "shader" as const, tier: "pro" as const, componentName: "MandalaBloom", sortOrder: 17 },
-  { slug: "crystal-lattice", name: "Crystal Lattice", description: "Hexagonal grid with wave propagation", category: "shader" as const, tier: "pro" as const, componentName: "CrystalLattice", sortOrder: 18 },
-  { slug: "infinite-descent", name: "Infinite Descent", description: "Julia set fractal with continuous zoom", category: "shader" as const, tier: "pro" as const, componentName: "InfiniteDescent", sortOrder: 19 },
 ];
 
 async function seed() {

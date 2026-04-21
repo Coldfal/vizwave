@@ -1,5 +1,5 @@
 import { NextResponse } from "next/server";
-import { spawn } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { mkdir, stat } from "node:fs/promises";
 import path from "node:path";
 import puppeteer, { type Browser, type Page } from "puppeteer";
@@ -9,8 +9,59 @@ import { db } from "@/lib/db";
 import { projects } from "@/lib/db/schema";
 import { and, eq } from "drizzle-orm";
 import { computeSpectrum } from "@/lib/render/audio-spectrum";
+import { isRemovedPreset } from "@/lib/presets/removed";
 
 const FFMPEG = ffmpegInstaller.path;
+
+// ─── Encoder probe (cached at module scope) ───────────────────────
+// Pick the fastest available h264 encoder. Hardware encoders are
+// typically 3-5× faster than libx264 at comparable quality.
+
+type EncoderChoice = {
+  name: string;
+  args: string[]; // ffmpeg flags, including `-c:v <enc>` and quality/preset
+};
+
+let cachedEncoder: EncoderChoice | null = null;
+
+function pickEncoder(crf: number): EncoderChoice {
+  if (cachedEncoder) return cachedEncoder;
+  let list = "";
+  try {
+    const out = spawnSync(FFMPEG, ["-hide_banner", "-encoders"], {
+      encoding: "utf8",
+      timeout: 10_000,
+    });
+    list = (out.stdout || "") + (out.stderr || "");
+  } catch {
+    list = "";
+  }
+  const has = (name: string) => list.includes(name);
+  let choice: EncoderChoice;
+  if (has("h264_nvenc")) {
+    choice = {
+      name: "h264_nvenc",
+      args: ["-c:v", "h264_nvenc", "-preset", "p5", "-tune", "hq", "-rc", "vbr", "-cq", String(crf), "-b:v", "0"],
+    };
+  } else if (has("h264_qsv")) {
+    choice = {
+      name: "h264_qsv",
+      args: ["-c:v", "h264_qsv", "-preset", "medium", "-global_quality", String(crf)],
+    };
+  } else if (has("h264_amf")) {
+    choice = {
+      name: "h264_amf",
+      args: ["-c:v", "h264_amf", "-quality", "balanced", "-rc", "cqp", "-qp_i", String(crf), "-qp_p", String(crf)],
+    };
+  } else {
+    choice = {
+      name: "libx264",
+      args: ["-c:v", "libx264", "-preset", "ultrafast", "-crf", String(crf)],
+    };
+  }
+  cachedEncoder = choice;
+  return choice;
+}
 
 // This route drives Puppeteer + ffmpeg — it must run for potentially many
 // minutes. Mark as dynamic and Node runtime only.
@@ -65,6 +116,12 @@ export async function POST(req: Request) {
   if (!project.audioUrl) {
     return NextResponse.json(
       { error: "Project has no audio to render" },
+      { status: 400 },
+    );
+  }
+  if (isRemovedPreset(project.presetId)) {
+    return NextResponse.json(
+      { error: "Preset no longer available — open the project and pick a replacement." },
       { status: 400 },
     );
   }
@@ -159,7 +216,10 @@ export async function POST(req: Request) {
     }
 
     // 4. Boot ffmpeg — receives a sequence of JPEG frames via stdin, muxes
-    //    with the original audio, outputs h264 MP4.
+    //    with the original audio, outputs h264 MP4. Uses the best h264
+    //    encoder available (NVENC > QSV > AMF > libx264).
+    const encoder = pickEncoder(crf);
+    console.log(`[render] using encoder ${encoder.name}`);
     ffmpegProc = spawn(FFMPEG, [
       "-y",
       "-hide_banner",
@@ -168,9 +228,7 @@ export async function POST(req: Request) {
       "-framerate", String(fps),
       "-i", "-",
       "-i", audioLocalPath,
-      "-c:v", "libx264",
-      "-preset", "veryfast",
-      "-crf", String(crf),
+      ...encoder.args,
       "-pix_fmt", "yuv420p",
       "-c:a", "aac",
       "-b:a", "192k",
@@ -186,16 +244,24 @@ export async function POST(req: Request) {
       ffmpegProc?.on("error", reject);
     });
 
-    // 5. Render each frame and pipe the JPEG to ffmpeg.
-    //    toDataURL is synchronous in-page; extract the base64 portion.
+    // 5. Render each frame and pipe a binary JPEG to ffmpeg.
+    //    We use page.screenshot({ encoding: "binary" }) instead of
+    //    toDataURL → base64: skips the ~30 % base64 bloat and the
+    //    slow synchronous toDataURL path in Blink.
+    const clip = { x: 0, y: 0, width: 1920, height: 1080 };
     for (let i = 0; i < frameCount; i++) {
-      const dataUrl: string = await page.evaluate((frameIdx: number) => {
+      await page.evaluate((frameIdx: number) => {
         window.__renderFrame(frameIdx);
-        const c = document.getElementById("render-canvas") as HTMLCanvasElement;
-        return c.toDataURL("image/jpeg", 0.92);
       }, i);
-      const base64 = dataUrl.slice(dataUrl.indexOf(",") + 1);
-      const buf = Buffer.from(base64, "base64");
+      const shot = await page.screenshot({
+        type: "jpeg",
+        quality: 92,
+        encoding: "binary",
+        clip,
+        omitBackground: false,
+        captureBeyondViewport: false,
+      });
+      const buf = Buffer.isBuffer(shot) ? shot : Buffer.from(shot as Uint8Array);
       if (!ffmpegProc.stdin?.write(buf)) {
         await new Promise<void>((r) => ffmpegProc?.stdin?.once("drain", () => r()));
       }
@@ -221,6 +287,7 @@ export async function POST(req: Request) {
       sizeBytes: stats.size,
       frameCount,
       fps,
+      encoder: encoder.name,
       durationSec: spectrum.duration,
       elapsedMs,
     });

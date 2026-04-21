@@ -46,6 +46,7 @@ async function loadImage(url: string): Promise<HTMLImageElement> {
 export function RenderClient(props: Props) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [status, setStatus] = useState<string>("Loading…");
+  const [hideStatus, setHideStatus] = useState(false);
 
   useEffect(() => {
     window.__renderReady = false;
@@ -134,6 +135,7 @@ export function RenderClient(props: Props) {
       };
 
       setStatus("Ready");
+      setHideStatus(true);
       window.__renderReady = true;
     })().catch((err) => {
       window.__renderError = err instanceof Error ? err.message : String(err);
@@ -158,6 +160,7 @@ export function RenderClient(props: Props) {
           background: "rgba(0,0,0,0.6)",
           padding: "4px 8px",
           borderRadius: 4,
+          display: hideStatus ? "none" : "block",
         }}
       >
         {status}

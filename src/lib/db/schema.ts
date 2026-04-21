@@ -51,7 +51,7 @@ export const presets = sqliteTable("presets", {
   name: text("name").notNull(),
   description: text("description"),
   thumbnailUrl: text("thumbnail_url"),
-  category: text("category", { enum: ["waveform", "particles", "3d", "minimal", "retro", "shader"] }).notNull(),
+  category: text("category", { enum: ["waveform", "particles", "3d", "minimal", "retro"] }).notNull(),
   tier: text("tier", { enum: ["free", "pro", "enterprise"] }).default("free").notNull(),
   componentName: text("component_name").notNull(),
   defaultConfig: text("default_config").notNull(), // JSON string

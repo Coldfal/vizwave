@@ -37,6 +37,7 @@ export interface RendererConfig {
   linearWidth: number;
   linearCenterText: string; // resolved text to render (computed in preview-canvas)
   linearCenterTextSize: number;
+  linearCenterTextOffsetY: number;
 }
 
 // ─── helpers ──────────────────────────────────────────────────────────
@@ -192,6 +193,9 @@ export function drawLinearBars({ ctx, W, H, cx, cy, freq, config, t }: RendererA
   const totalW = W * widthFrac;
   const bandW = totalW / repeats;
   const startX = (W - totalW) / 2;
+  // Global target column width so every bar has the same width regardless
+  // of whether its band gets clipped by the centre-text gap.
+  const targetColW = bandW / barsPerBand;
 
   const barColor = config.linearBarColor || config.waveColor1;
   const glowColor = config.waveColor2;
@@ -201,21 +205,21 @@ export function drawLinearBars({ ctx, W, H, cx, cy, freq, config, t }: RendererA
 
   // Draw center text once, globally. Get gap region for band clipping.
   const textSize = config.linearCenterTextSize * (W / 1920);
-  const textY = baseY - maxH / 2;
+  const textOffsetY = (config.linearCenterTextOffsetY ?? 0) * maxH;
+  const textY = baseY - maxH / 2 + textOffsetY;
   const gap = computeCenterTextRegion(ctx, W, textY, config.linearCenterText, textSize, barColor);
 
   for (let band = 0; band < repeats; band++) {
     const bandStart = startX + band * bandW;
     const bandEnd = bandStart + bandW;
     const segments = segmentsAroundGap(bandStart, bandEnd, gap);
-    const totalActiveW = segments.reduce((s, seg) => s + (seg.end - seg.start), 0);
-    if (totalActiveW <= 0) continue;
+    if (segments.length === 0) continue;
 
     const segGap = Math.max(2, bandW * 0.008);
     let idx = 0;
     for (const seg of segments) {
       const segW = seg.end - seg.start;
-      const segCount = Math.max(2, Math.round((segW / totalActiveW) * barsPerBand));
+      const segCount = Math.max(2, Math.round(segW / targetColW));
       const bw = (segW - segGap * (segCount - 1)) / segCount;
       for (let i = 0; i < segCount; i++) {
         const x = seg.start + i * (bw + segGap);
@@ -257,6 +261,9 @@ export function drawLinearDots({ ctx, W, H, cx, cy, freq, config, t }: RendererA
   const bandW = totalW / repeats;
   const startX = (W - totalW) / 2;
   const rowsPerBar = 14;
+  // Global target column width so dot spacing stays consistent even when
+  // the centre-text gap clips a band.
+  const targetColW = bandW / barsPerBand;
 
   const barColor = config.linearBarColor || config.waveColor1;
   const bars = resample(freq, barsPerBand);
@@ -264,7 +271,8 @@ export function drawLinearDots({ ctx, W, H, cx, cy, freq, config, t }: RendererA
   ctx.save();
 
   const textSize = config.linearCenterTextSize * (W / 1920);
-  const textY = baseY - maxH / 2;
+  const textOffsetY = (config.linearCenterTextOffsetY ?? 0) * maxH;
+  const textY = baseY - maxH / 2 + textOffsetY;
   const gap = computeCenterTextRegion(ctx, W, textY, config.linearCenterText, textSize, barColor);
 
   const drawDotColumn = (x: number, v: number, colW: number) => {
@@ -285,13 +293,12 @@ export function drawLinearDots({ ctx, W, H, cx, cy, freq, config, t }: RendererA
     const bandStart = startX + band * bandW;
     const bandEnd = bandStart + bandW;
     const segments = segmentsAroundGap(bandStart, bandEnd, gap);
-    const totalActiveW = segments.reduce((s, seg) => s + (seg.end - seg.start), 0);
-    if (totalActiveW <= 0) continue;
+    if (segments.length === 0) continue;
 
     let idx = 0;
     for (const seg of segments) {
       const segW = seg.end - seg.start;
-      const segCount = Math.max(2, Math.round((segW / totalActiveW) * barsPerBand));
+      const segCount = Math.max(2, Math.round(segW / targetColW));
       const colW = segW / segCount;
       for (let i = 0; i < segCount; i++) {
         const cxCol = seg.start + colW * (i + 0.5);
@@ -971,131 +978,6 @@ export function drawTrapNation({ ctx, W, H, cx, cy, freq, config, t }: RendererA
   ctx.restore();
 }
 
-// ─── 14. Neon Pulse (GLSL shader) ───────────────────────────────────
-
-import { renderNeonPulse } from "./webgl-ring";
-import { renderShader } from "./webgl-shaders";
-import { FRAG as AURORA_FRAG } from "./shaders/aurora-streams.glsl";
-import { FRAG as SPIRAL_FRAG } from "./shaders/sonic-spiral.glsl";
-import { FRAG as MANDALA_FRAG } from "./shaders/mandala-bloom.glsl";
-import { FRAG as CRYSTAL_FRAG } from "./shaders/crystal-lattice.glsl";
-import { FRAG as DESCENT_FRAG } from "./shaders/infinite-descent.glsl";
-
-export function drawNeonPulse({ ctx, W, H, cx, cy, freq, config, t }: RendererArgs) {
-  const shaderCanvas = renderNeonPulse({
-    W, H, t, freq,
-    color1: config.waveColor1,
-    color2: config.waveColor2,
-    accent: config.accentColor,
-  });
-
-  if (shaderCanvas) {
-    // Composite the WebGL output with transparency onto our 2D canvas
-    ctx.save();
-    ctx.globalCompositeOperation = "lighter";
-    ctx.drawImage(shaderCanvas as CanvasImageSource, 0, 0, W, H);
-    ctx.restore();
-  } else {
-    // Fallback: draw a simple ring if WebGL fails
-    drawNeonRing({ ctx, W, H, cx, cy, freq, config, t });
-  }
-}
-
-// ─── 14. Aurora Streams (GLSL shader) ───────────────────────────────
-
-export function drawAuroraStreams({ ctx, W, H, cx, cy, freq, config, t }: RendererArgs) {
-  const shaderCanvas = renderShader("aurora-streams", AURORA_FRAG, {
-    W, H, t, freq,
-    color1: config.waveColor1,
-    color2: config.waveColor2,
-    accent: config.accentColor,
-  });
-  if (shaderCanvas) {
-    ctx.save();
-    ctx.globalCompositeOperation = "lighter";
-    ctx.drawImage(shaderCanvas as CanvasImageSource, 0, 0, W, H);
-    ctx.restore();
-  } else {
-    drawMinimalWave({ ctx, W, H, cx, cy, freq, config, t });
-  }
-}
-
-// ─── 15. Sonic Spiral (GLSL shader) ────────────────────────────────
-
-export function drawSonicSpiral({ ctx, W, H, cx, cy, freq, config, t }: RendererArgs) {
-  const shaderCanvas = renderShader("sonic-spiral", SPIRAL_FRAG, {
-    W, H, t, freq,
-    color1: config.waveColor1,
-    color2: config.waveColor2,
-    accent: config.accentColor,
-  });
-  if (shaderCanvas) {
-    ctx.save();
-    ctx.globalCompositeOperation = "lighter";
-    ctx.drawImage(shaderCanvas as CanvasImageSource, 0, 0, W, H);
-    ctx.restore();
-  } else {
-    drawNeonRing({ ctx, W, H, cx, cy, freq, config, t });
-  }
-}
-
-// ─── 16. Mandala Bloom (GLSL shader) ───────────────────────────────
-
-export function drawMandalaBloom({ ctx, W, H, cx, cy, freq, config, t }: RendererArgs) {
-  const shaderCanvas = renderShader("mandala-bloom", MANDALA_FRAG, {
-    W, H, t, freq,
-    color1: config.waveColor1,
-    color2: config.waveColor2,
-    accent: config.accentColor,
-  });
-  if (shaderCanvas) {
-    ctx.save();
-    ctx.globalCompositeOperation = "lighter";
-    ctx.drawImage(shaderCanvas as CanvasImageSource, 0, 0, W, H);
-    ctx.restore();
-  } else {
-    drawNeonRing({ ctx, W, H, cx, cy, freq, config, t });
-  }
-}
-
-// ─── 17. Crystal Lattice (GLSL shader) ─────────────────────────────
-
-export function drawCrystalLattice({ ctx, W, H, cx, cy, freq, config, t }: RendererArgs) {
-  const shaderCanvas = renderShader("crystal-lattice", CRYSTAL_FRAG, {
-    W, H, t, freq,
-    color1: config.waveColor1,
-    color2: config.waveColor2,
-    accent: config.accentColor,
-  });
-  if (shaderCanvas) {
-    ctx.save();
-    ctx.globalCompositeOperation = "lighter";
-    ctx.drawImage(shaderCanvas as CanvasImageSource, 0, 0, W, H);
-    ctx.restore();
-  } else {
-    drawForestLights({ ctx, W, H, cx, cy, freq, config, t });
-  }
-}
-
-// ─── 18. Infinite Descent (GLSL shader) ────────────────────────────
-
-export function drawInfiniteDescent({ ctx, W, H, cx, cy, freq, config, t }: RendererArgs) {
-  const shaderCanvas = renderShader("infinite-descent", DESCENT_FRAG, {
-    W, H, t, freq,
-    color1: config.waveColor1,
-    color2: config.waveColor2,
-    accent: config.accentColor,
-  });
-  if (shaderCanvas) {
-    ctx.save();
-    ctx.globalCompositeOperation = "lighter";
-    ctx.drawImage(shaderCanvas as CanvasImageSource, 0, 0, W, H);
-    ctx.restore();
-  } else {
-    drawMagmaFlow({ ctx, W, H, cx, cy, freq, config, t });
-  }
-}
-
 // ─── Dispatcher ──────────────────────────────────────────────────────
 
 const RENDERERS: Record<string, (args: RendererArgs) => void> = {
@@ -1114,12 +996,6 @@ const RENDERERS: Record<string, (args: RendererArgs) => void> = {
   "magma-flow": drawMagmaFlow,
   "neon-tunnel": drawNeonTunnel,
   "trap-nation": drawTrapNation,
-  "neon-pulse": drawNeonPulse,
-  "aurora-streams": drawAuroraStreams,
-  "sonic-spiral": drawSonicSpiral,
-  "mandala-bloom": drawMandalaBloom,
-  "crystal-lattice": drawCrystalLattice,
-  "infinite-descent": drawInfiniteDescent,
 };
 
 export function renderPreset(presetId: string | null | undefined, args: RendererArgs) {
