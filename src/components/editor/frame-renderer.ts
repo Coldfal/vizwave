@@ -57,6 +57,22 @@ function detectBeat(
 
 // ─── Main frame renderer ─────────────────────────────────────────
 
+// DrawableImage is whatever ctx.drawImage accepts and exposes width/height
+// — HTMLImageElement in the browser, @napi-rs/canvas Image in Node.
+export interface DrawableImage {
+  width: number;
+  height: number;
+}
+export interface DrawableVideo {
+  videoWidth: number;
+  videoHeight: number;
+  readyState: number;
+}
+
+// ctx / canvas are the browser DOM types in the preview and the
+// @napi-rs/canvas equivalents in the Node render path. Both expose the
+// same 2D API, so we type via the DOM definitions and the Node types
+// structurally match at call sites.
 export interface FrameArgs {
   ctx: CanvasRenderingContext2D;
   canvas: HTMLCanvasElement;
@@ -69,10 +85,10 @@ export interface FrameArgs {
   beatState: BeatState;
   config: ProjectConfig;
   presetId: string | null | undefined;
-  logoImg: HTMLImageElement | null;
-  bgImg: HTMLImageElement | null;
-  bgVideo: HTMLVideoElement | null;
-  overlayImg: HTMLImageElement | null;
+  logoImg: DrawableImage | null;
+  bgImg: DrawableImage | null;
+  bgVideo: DrawableVideo | null;
+  overlayImg: DrawableImage | null;
 }
 
 export function renderFrame(args: FrameArgs): void {
@@ -201,14 +217,17 @@ function drawBackgroundSource(
   ctx: CanvasRenderingContext2D,
   W: number,
   H: number,
-  source: HTMLImageElement | HTMLVideoElement,
+  source: DrawableImage | DrawableVideo,
   config: { backgroundBlur: number; backgroundDarken: number },
   extraPadX: number = 0,
   extraPadY: number = 0,
 ) {
   ctx.save();
-  const srcW = source instanceof HTMLVideoElement ? source.videoWidth : source.width;
-  const srcH = source instanceof HTMLVideoElement ? source.videoHeight : source.height;
+  // Duck-typing so this module works in both browser and Node
+  // (HTMLVideoElement only exists in the browser).
+  const isVideo = "videoWidth" in source;
+  const srcW = isVideo ? (source as DrawableVideo).videoWidth : (source as DrawableImage).width;
+  const srcH = isVideo ? (source as DrawableVideo).videoHeight : (source as DrawableImage).height;
   if (srcW === 0 || srcH === 0) {
     ctx.restore();
     return;
@@ -229,7 +248,7 @@ function drawBackgroundSource(
   const blurPad = blurPx > 0 ? blurPx * 2.5 : 0;
   const padX = Math.max(blurPad, extraPadX);
   const padY = Math.max(blurPad, extraPadY);
-  ctx.drawImage(source, sx, sy, sw, sh, -padX, -padY, W + padX * 2, H + padY * 2);
+  ctx.drawImage(source as CanvasImageSource, sx, sy, sw, sh, -padX, -padY, W + padX * 2, H + padY * 2);
   ctx.filter = "none";
   const darken = config.backgroundDarken;
   ctx.globalAlpha = darken;
@@ -246,7 +265,7 @@ function drawCenterLogo(
   W: number,
   H: number,
   config: { logoScale: number; logoBorderRadius: number; waveColor1: string; waveColor2: string },
-  logoImg: HTMLImageElement | null,
+  logoImg: DrawableImage | null,
   _bass: number,
   beatEnergy: number,
 ) {
@@ -280,7 +299,7 @@ function drawCenterLogo(
       sh = logoImg.width;
       sy = (logoImg.height - sh) / 2;
     }
-    ctx.drawImage(logoImg, sx, sy, sw, sh, x, y, size, size);
+    ctx.drawImage(logoImg as CanvasImageSource, sx, sy, sw, sh, x, y, size, size);
     ctx.restore();
     ctx.save();
   } else {
@@ -542,7 +561,7 @@ function drawCornerOverlay(
   ctx: CanvasRenderingContext2D,
   W: number,
   H: number,
-  img: HTMLImageElement,
+  img: DrawableImage,
   config: {
     overlayPosition: string;
     overlayScale: number;
@@ -584,7 +603,7 @@ function drawCornerOverlay(
   x += (config.overlayOffsetX / 100) * W;
   y += (config.overlayOffsetY / 100) * H;
   ctx.globalAlpha = config.overlayOpacity;
-  ctx.drawImage(img, x, y, drawW, drawH);
+  ctx.drawImage(img as CanvasImageSource, x, y, drawW, drawH);
   ctx.globalAlpha = 1;
   ctx.restore();
 }

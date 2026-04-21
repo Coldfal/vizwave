@@ -42,6 +42,9 @@ local.db
 # user uploads
 public/uploads/
 
+# rendered exports (local-only; outputs belong in blob storage)
+public/renders/
+
 # claude code
 .claude/
 
