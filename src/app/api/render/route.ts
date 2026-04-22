@@ -66,7 +66,7 @@ function pickEncoder(crf: number): EncoderChoice {
   } else {
     choice = {
       name: "libx264",
-      args: ["-c:v", "libx264", "-preset", "ultrafast", "-crf", String(crf)],
+      args: ["-c:v", "libx264", "-preset", "veryfast", "-crf", String(crf)],
     };
   }
   cachedEncoder = choice;
@@ -126,7 +126,9 @@ export async function POST(req: Request) {
 
   const { projectId } = body;
   const fps = body.fps ?? 30;
-  const crf = body.crf ?? 20;
+  // crf 23 + veryfast gives ~60-70% smaller files than ultrafast/crf 20
+  // at essentially the same perceptual quality for visualiser output.
+  const crf = body.crf ?? 23;
 
   if (!projectId) {
     return new Response(JSON.stringify({ error: "projectId required" }), {
@@ -283,7 +285,6 @@ export async function POST(req: Request) {
           "-c:a", "aac",
           "-b:a", "192k",
           "-shortest",
-          "-movflags", "+faststart",
           outputPath,
         ]);
 

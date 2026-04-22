@@ -15,7 +15,7 @@ import { Download, Square } from "lucide-react";
 import { toast } from "sonner";
 import { isRemovedPreset } from "@/lib/presets/removed";
 
-type Fps = 30 | 60;
+type Fps = 24 | 30 | 60;
 
 interface ProgressState {
   stage: string;
@@ -174,6 +174,7 @@ export function ExportPanel() {
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
+            <SelectItem value="24">24 fps</SelectItem>
             <SelectItem value="30">30 fps</SelectItem>
             <SelectItem value="60">60 fps</SelectItem>
           </SelectContent>
